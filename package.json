@@ -1,0 +1,19 @@
+{
+  "name": "discord-claude-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ponte Discord -> Claude Code headless (login do plano claude.ai)",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22.9"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3"
+  }
+}
