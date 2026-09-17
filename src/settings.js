@@ -15,6 +15,10 @@ export const TARGET_USER_IDS = [
   "***REMOVED***", //Dodecagono
   "***REMOVED***", //Rada
   "***REMOVED***", //Caligula
+  "***REMOVED***", //Moon
+  "***REMOVED***", //Horvat
+  "***REMOVED***", //Ryquinox
+  "***REMOVED***", //Sno
 
 
   // '123456789012345678',

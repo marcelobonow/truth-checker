@@ -6,7 +6,7 @@ import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
 import { createInflight } from './inflight.js';
 import { splitMessage } from './split.js';
-import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, shouldReply, selectContext, parseDirective, formatStatus, sessionResetReason } from './bridge.js';
+import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, shouldReply, selectContext, parseDirective, formatStatus, sessionResetReason, hasText, mentionsByName } from './bridge.js';
 import { selectBackend } from './backend.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { logger } from './logger.js';
@@ -186,7 +186,9 @@ client.on(Events.TypingStart, (typing) => {
 
 client.on(Events.MessageCreate, async (message) => {
   const isTarget = config.targetUserIds.includes(message.author.id);
-  const mentionsBot = message.mentions.users.has(client.user.id);
+  // menção real ou "@Nome" colado como texto
+  const mentionsBot = message.mentions.users.has(client.user.id)
+    || mentionsByName(message.content, [client.user.username, message.guild?.members.me?.displayName]);
   const meta = {
     authorId: message.author.id,
     isBot: message.author.bot,
@@ -210,8 +212,8 @@ client.on(Events.MessageCreate, async (message) => {
     .filter((u) => u.id !== client.user.id)
     .map((u) => ({ id: u.id, name: message.mentions.members?.get(u.id)?.displayName ?? u.displayName }));
   const item = { message, content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions };
-  if (!item.content.trim()) {
-    logger.info('ignorada: sem texto (só anexo/embed)');
+  if (!hasText(message.content)) {
+    logger.info(`ignorada: sem texto (${message.attachments.size} anexo(s), ${message.embeds.length} embed(s))`);
     return;
   }
 

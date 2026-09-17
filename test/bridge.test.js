@@ -50,7 +50,7 @@ test('buildUserMessage: uma mensagem, julgamento', () => {
     guildName: 'Meu Server', channelName: 'geral', authorName: 'marcelo',
     items: [{ content: 'node 24 é LTS?', replyToBot: false, mentionsBot: false, quoted: null }],
   });
-  assert.equal(text, '[discord] servidor: Meu Server | canal: #geral | autor: marcelo | responder: se couber\nnode 24 é LTS?');
+  assert.equal(text, ['[discord] servidor: Meu Server | canal: #geral | autor: marcelo | responder: se couber', 'node 24 é LTS?', '>> responda a marcelo: só às mensagens novas acima (a última: "node 24 é LTS?"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.'].join('\n'));
 });
 
 test('buildUserMessage: várias mensagens numeradas, citação, e "sempre" se alguma for reply ao bot ou menção', () => {
@@ -67,6 +67,7 @@ test('buildUserMessage: várias mensagens numeradas, citação, e "sempre" se al
     '1. primeira',
     '2. (em resposta a joao: "acho que é") não, ainda não é',
     '3. e aí?',
+    '>> responda a a: só às mensagens novas acima (a última: "e aí?"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.',
   ].join('\n'));
 });
 
@@ -218,6 +219,7 @@ test('buildUserMessage: seção de contexto recente entre o cabeçalho e as mens
     '- a: vi sim',
     'mensagens novas:',
     'foi bom',
+    '>> responda a a: só às mensagens novas acima (a última: "foi bom"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.',
   ].join('\n'));
 });
 
@@ -226,7 +228,7 @@ test('buildUserMessage: sem contexto, formato antigo (sem seções)', () => {
     guildName: 'S', channelName: 'c', authorName: 'a', context: [],
     items: [{ content: 'oi', replyToBot: false, mentionsBot: false, quoted: null }],
   });
-  assert.equal(text, '[discord] servidor: S | canal: #c | autor: a | responder: se couber\noi');
+  assert.equal(text, ['[discord] servidor: S | canal: #c | autor: a | responder: se couber', 'oi', '>> responda a a: só às mensagens novas acima (a última: "oi"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.'].join('\n'));
 });
 
 test('selectContext: autor com menos mensagens que o limite entra com o que tiver', () => {
@@ -393,6 +395,7 @@ test('buildUserMessage: pessoas citadas e contexto com índices #n (lote da whit
     '- #2 a: hm',
     'mensagens novas:',
     'responda ao @Fulano',
+    '>> responda a a: só às mensagens novas acima (a última: "responda ao @Fulano"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.',
   ].join('\n'));
 });
 
@@ -491,4 +494,37 @@ test('formatStatus: waiting mostra lotes ainda esperando fechar, junto com a fil
   assert.equal(formatStatus(null, { maxMessages: 400, queued: 0, waiting: 2 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: vazia; 2 lotes esperando fechar.');
   assert.equal(formatStatus(null, { maxMessages: 400, queued: 2, waiting: 1 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: 2 gerações (1 em andamento); 1 lote esperando fechar.');
   assert.equal(formatStatus(null, { maxMessages: 400, queued: 0, waiting: 0 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: vazia.');
+});
+
+import { hasText } from '../src/bridge.js';
+
+test('hasText: só imagem, só menção ou menção + imagem não contam como texto', () => {
+  assert.equal(hasText('oi, o que acha?'), true);
+  assert.equal(hasText('<@123> o que acha disso?'), true);
+  assert.equal(hasText(''), false);
+  assert.equal(hasText('   '), false);
+  assert.equal(hasText('<@123>'), false);
+  assert.equal(hasText('<@!123> <@&456> <#789>'), false);
+});
+
+import { mentionsByName } from '../src/bridge.js';
+
+test('mentionsByName: "@Nome" literal no texto (menção copiada/colada) conta como menção', () => {
+  const names = ['Truth-Check', 'Truth Check Bot'];
+  assert.equal(mentionsByName('@Truth-Check tu vai no uruguai?', names), true);
+  assert.equal(mentionsByName('e aí @truth-check, opina', names), true);
+  assert.equal(mentionsByName('fala @Truth Check Bot', names), true);
+  assert.equal(mentionsByName('o truth-check disse que sim', names), false);
+  assert.equal(mentionsByName('@Truth-Checker é outro', names), false);
+  assert.equal(mentionsByName('<@123> oi', names), false);
+  assert.equal(mentionsByName('', names), false);
+});
+
+test('buildUserMessage: lembrete final resume a última mensagem (sem citação, cortada em 80 chars)', () => {
+  const long = 'x'.repeat(100);
+  const text = buildUserMessage({
+    guildName: 'S', channelName: 'c', authorName: 'a',
+    items: [{ content: 'primeira', replyToBot: false, mentionsBot: false, quoted: null }, { content: long, replyToBot: false, mentionsBot: false, quoted: { author: 'j', content: 'q' } }],
+  });
+  assert.ok(text.endsWith(`(a última: "${'x'.repeat(80)}…"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.`));
 });

@@ -21,6 +21,24 @@ export function shouldHandle(meta, config) {
   return skipReason(meta, config) === null;
 }
 
+// Texto de verdade na mensagem (conteúdo bruto, com <@id>): menções de
+// usuário/cargo/canal sozinhas não contam. Mensagem só com imagem, ou só com
+// "@bot" + imagem, não é analisada (o bot não lê imagens).
+export function hasText(rawContent) {
+  return (rawContent ?? '').replace(/<[@#][!&]?\d+>/g, '').trim().length > 0;
+}
+
+// "@Nome" escrito como texto (mensagem copiada/colada ou digitada sem escolher
+// no autocomplete): o Discord não registra menção, mas a intenção é a mesma.
+// `names`: nome de usuário e apelido do bot no servidor. Texto bruto, onde a
+// menção real aparece como <@id> e não confunde.
+export function mentionsByName(rawContent, names) {
+  const text = rawContent ?? '';
+  return names.filter(Boolean).some((name) => new RegExp(`(^|\\s)@${escapeRegExp(name)}(?![\\w-])`, 'iu').test(text));
+}
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export function sessionKey({ guildId, isTarget }) {
   return isTarget ? guildId : `${guildId}:public`;
 }
@@ -85,15 +103,24 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
     return quote + item.content;
   });
   const body = lines.length === 1 ? lines[0] : lines.map((line, i) => `${i + 1}. ${line}`).join('\n');
-  if (context.length === 0) return `${header}\n${body}`;
+  // Lembrete no fim: a sessão é compartilhada e o lote espera alguns segundos,
+  // então há mensagens de outras pessoas antes e depois; deixa explícito a
+  // quem e a quê responder.
+  const reminder = `>> responda a ${authorName}: só às mensagens novas acima (a última: "${preview(items.at(-1).content)}"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.`;
+  if (context.length === 0) return [header, body, reminder].join('\n');
 
   const contextLines = context.map((m, i) => {
     const stale = m.timestamp != null && referenceTimestamp - m.timestamp > STALE_CONTEXT_MS;
     const time = stale ? `[${formatTime(m.timestamp)}] ` : '';
     return `- ${time}${indexed ? `#${i + 1} ` : ''}${m.authorName}: ${m.content}`;
   });
-  return [header, 'contexto recente do canal (mais antigo primeiro):', ...contextLines, 'mensagens novas:', body].join('\n');
+  return [header, 'contexto recente do canal (mais antigo primeiro):', ...contextLines, 'mensagens novas:', body, reminder].join('\n');
 }
+
+const preview = (text, max = 80) => {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+};
 
 // "[responder: #n]" no começo de uma das primeiras linhas da resposta: pedido
 // de reply na mensagem #n do contexto (1-based). Devolve o índice e o texto
