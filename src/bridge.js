@@ -1,4 +1,4 @@
-import { buildArgs, runClaude, NO_REPLY } from './claude.js';
+import { buildArgs, buildJudgeArgs, runClaude, NO_REPLY } from './claude.js';
 
 // Regras de roteamento (ver docs/superpowers/specs, §2 e §3).
 
@@ -24,6 +24,17 @@ export function sessionKey({ guildId, isTarget }) {
   return isTarget ? guildId : `${guildId}:public`;
 }
 
+// Resposta do "/status": tamanho da sessão atual (mensagens/limite) e
+// inatividade, para decidir se vale a pena `/reset` antes de continuar.
+export function formatStatus(info, { maxMessages, maxContextTokens }, now = Date.now()) {
+  if (!info) return 'Online. Nenhuma sessão ativa neste servidor.';
+  const idleMin = Math.floor((now - info.lastUsed) / 60_000);
+  const limit = maxMessages > 0 ? `/${maxMessages}` : '';
+  const k = (n) => `${Math.round(n / 1000)}k`;
+  const tokens = `${k(info.contextTokens ?? 0)}${maxContextTokens > 0 ? `/${k(maxContextTokens)}` : ''} tokens`;
+  return `Online. Sessão: ${info.messages}${limit} mensagens, ${tokens}, inativa há ${idleMin}min.`;
+}
+
 // Contexto do canal: as últimas `channel` mensagens + as últimas `author`
 // mensagens de cada pessoa em `authorIds` (quem escreveu e quem foi citado),
 // unidas sem duplicar, em ordem cronológica.
@@ -42,7 +53,17 @@ export function selectContext(history, { channel, author, authorId, authorIds = 
 // mensagens do lote (formato descrito no system prompt). `indexed` (lotes da
 // whitelist): lista os citados com id e numera o contexto (#n) para o Claude
 // poder pedir reply numa mensagem específica.
-export function buildUserMessage({ guildName, channelName, authorName, items, context = [], mentions = [], indexed = false }) {
+// Mensagens de contexto mais antigas que isso (em relação à mensagem que
+// disparou o lote) ganham um prefixo de hora, para o Claude perceber que
+// pode não ser mais a mesma conversa.
+const STALE_CONTEXT_MS = 10 * 60_000;
+
+const formatTime = (ts) => {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+export function buildUserMessage({ guildName, channelName, authorName, items, context = [], mentions = [], indexed = false, referenceTimestamp = Date.now() }) {
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   let header = `[discord] servidor: ${guildName} | canal: #${channelName} | autor: ${authorName} | responder: ${forced ? 'sempre' : 'se couber'}`;
   if (indexed && mentions.length > 0) {
@@ -55,7 +76,11 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   const body = lines.length === 1 ? lines[0] : lines.map((line, i) => `${i + 1}. ${line}`).join('\n');
   if (context.length === 0) return `${header}\n${body}`;
 
-  const contextLines = context.map((m, i) => `- ${indexed ? `#${i + 1} ` : ''}${m.authorName}: ${m.content}`);
+  const contextLines = context.map((m, i) => {
+    const stale = m.timestamp != null && referenceTimestamp - m.timestamp > STALE_CONTEXT_MS;
+    const time = stale ? `[${formatTime(m.timestamp)}] ` : '';
+    return `- ${time}${indexed ? `#${i + 1} ` : ''}${m.authorName}: ${m.content}`;
+  });
   return [header, 'contexto recente do canal (mais antigo primeiro):', ...contextLines, 'mensagens novas:', body].join('\n');
 }
 
@@ -77,11 +102,35 @@ export function isNoReply(text) {
 const RESUME_FAILURE = /No conversation found with session ID/i;
 
 // Motivo para começar uma sessão nova em vez de retomar (ou null).
-export function sessionResetReason(info, { maxMessages, idleMs }, now) {
+export function sessionResetReason(info, { maxMessages, maxContextTokens = 0, idleMs }, now) {
   if (!info) return null;
   if (maxMessages > 0 && info.messages >= maxMessages) return 'mensagens';
+  if (maxContextTokens > 0 && (info.contextTokens ?? 0) >= maxContextTokens) return 'tokens';
   if (idleMs > 0 && now - info.lastUsed > idleMs) return 'inatividade';
   return null;
+}
+
+// Filtro barato (modelo `config.judge.model`, sem sessão, sem ferramentas):
+// true se vale gerar a resposta de verdade. Qualquer falha libera a resposta
+// (o modelo principal ainda pode dizer NO_REPLY).
+export async function shouldReply({ mode, prompt, config, runner = runClaude, signal }) {
+  const cwd = mode === 'full' ? config.workDir : config.webDir;
+  try {
+    const res = await runner({
+      prompt,
+      args: buildJudgeArgs({ extraPrompt: config.extraPrompt?.[mode], model: config.judge?.model, effort: config.judge?.effort }),
+      cwd,
+      bin: config.bin,
+      timeoutMs: config.judge?.timeoutMs ?? config.timeoutMs,
+      signal,
+    });
+    if (res.isError) return { reply: true, reason: `erro do juiz (${res.subtype})` };
+    const verdict = res.text.trim().toUpperCase().replace(/[^A-Z]/g, '');
+    return { reply: verdict !== 'NAO', reason: verdict, costUsd: res.costUsd };
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    return { reply: true, reason: `falha do juiz (${err.message})` };
+  }
 }
 
 // Uma execução do claude na sessão `key`, com retomada; se a sessão salva não
@@ -101,6 +150,7 @@ export async function askClaude({ key, mode, prompt, store, config, runner = run
         extraPrompt: config.extraPrompt?.[mode],
         model: config.model?.[mode],
         effort: config.effort?.[mode],
+        maxTurns: config.maxTurns?.[mode],
       }),
       cwd,
       bin: config.bin,
@@ -122,7 +172,7 @@ export async function askClaude({ key, mode, prompt, store, config, runner = run
 
   if (result.sessionId) {
     store.set(key, result.sessionId);
-    store.touch?.(key, messageCount, now);
+    store.touch?.(key, messageCount, now, result.contextTokens);
   }
   return { ...result, sessionReset };
 }

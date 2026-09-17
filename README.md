@@ -29,7 +29,7 @@ já feito nesta máquina (sem API key). Design completo em
   Claude escolhe entre responder a uma mensagem dele, só marcá-lo no texto, ou
   nenhum dos dois.
 - Uma sessão do Claude por servidor (contexto mantido entre mensagens);
-  `!reset` reinicia a sessão daquele servidor. Reinício automático quando a
+  `/reset` reinicia a sessão daquele servidor. Reinício automático quando a
   sessão passa de 400 mensagens enviadas ao Claude ou fica 1 h sem uso
   (`SESSION` em `src/settings.js`). Com `RESET_ON_START = true` (padrão), reiniciar
   o bot também limpa todas as sessões.
@@ -68,7 +68,7 @@ Cada lote processado consome um turno do plano claude.ai.
 - O modo web roda sem skills e sem servidores MCP (`--disable-slash-commands`,
   `--strict-mcp-config`): system prompt menor a cada chamada.
 - Sessões longas custam mais a cada mensagem (todo o histórico volta ao
-  modelo); o reinício automático (`SESSION`) e o `!reset` limitam isso.
+  modelo); o reinício automático (`SESSION`) e o `/reset` limitam isso.
 
 ## Logs
 

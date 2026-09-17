@@ -165,6 +165,17 @@ test('system prompt explica a seção de contexto recente', () => {
   assert.match(flagValue(buildArgs({ mode: 'web' }), '--append-system-prompt'), /contexto recente/);
 });
 
+test('parseResult: contextTokens = input + cache da última iteração', () => {
+  const usage = {
+    input_tokens: 100, cache_read_input_tokens: 50_000, cache_creation_input_tokens: 5_000,
+    iterations: [{ input_tokens: 10, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0 }, { input_tokens: 90, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 5_000 }],
+  };
+  assert.equal(parseResult(JSON.stringify({ type: 'result', subtype: 'success', result: 'x', usage })).contextTokens, 35_090);
+  const flat = { input_tokens: 9, cache_creation_input_tokens: 7_614, cache_read_input_tokens: 0 };
+  assert.equal(parseResult(JSON.stringify({ type: 'result', subtype: 'success', result: 'x', usage: flat })).contextTokens, 7_623);
+  assert.equal(parseResult(JSON.stringify({ type: 'result', subtype: 'success', result: 'x' })).contextTokens, 0);
+});
+
 test('parseResult acha a linha de resultado no meio do stream NDJSON', () => {
   const out = [
     JSON.stringify({ type: 'system', subtype: 'init', session_id: 's9' }),

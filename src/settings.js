@@ -2,8 +2,9 @@
 // IDs do Discord são strings numéricas: ligue o "Modo desenvolvedor"
 // (Configurações → Avançado), botão direito no usuário/servidor → Copiar ID.
 
-// Usuários atendidos pelo bot (qualquer um deles pode usar !reset).
+// Usuários atendidos pelo bot (qualquer um deles pode usar /reset e /status).
 export const TARGET_USER_IDS = [
+  "***REMOVED***",
   "***REMOVED***",
   "***REMOVED***",
   // '123456789012345678',
@@ -32,6 +33,16 @@ export const EFFORT = {
   full: 'medium',
 };
 
+// Filtro antes da resposta (só quando "responder: se couber", isto é, sem
+// menção nem reply ao bot): um modelo barato decide SIM/NAO. null desliga.
+export const JUDGE = {
+  model: 'haiku',
+  effort: 'low',
+};
+
+// Máximo de idas à web (WebSearch/WebFetch) por resposta no modo web.
+export const WEB_MAX_TURNS = 4;
+
 // Contexto enviado junto com cada lote: busca as últimas `fetch` mensagens do
 // canal, inclui as últimas `channel` delas e, dentro das mesmas `fetch`, as
 // últimas `author` de quem escreveu (se tiver menos, entra o que houver).
@@ -44,10 +55,12 @@ export const CONTEXT = {
 
 // Reinício automático da sessão do Claude (o contexto não cresce sem limite):
 // começa uma sessão nova quando o total de mensagens já enviadas a ela (lote +
-// contexto) passar de `maxMessages`, ou quando ficar `idleMinutes` sem uso.
-// 0 desliga o critério. `!reset` continua funcionando a qualquer momento.
+// contexto) passar de `maxMessages`, quando o contexto da última rodada passar
+// de `maxContextTokens`, ou quando ficar `idleMinutes` sem uso.
+// 0 desliga o critério. `/reset` continua funcionando a qualquer momento.
 export const SESSION = {
   maxMessages: 400,
+  maxContextTokens: 150_000,
   idleMinutes: 60,
 };
 

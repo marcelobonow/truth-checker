@@ -2,9 +2,10 @@ import fs from 'node:fs';
 
 // Guarda, por chave (servidor), a sessão do Claude num JSON em disco, para o
 // contexto sobreviver a reinícios do bot:
-//   { "<chave>": { id, messages, lastUsed } }
+//   { "<chave>": { id, messages, lastUsed, contextTokens } }
 // `messages` = total de mensagens já enviadas ao Claude nessa sessão (lote +
-// contexto); `lastUsed` = timestamp do último uso. Usados no reinício automático.
+// contexto); `lastUsed` = timestamp do último uso; `contextTokens` = tamanho
+// do contexto na última rodada. Usados no reinício automático.
 export function createSessionStore(filePath, { onError = console.error } = {}) {
   const sessions = load(filePath);
 
@@ -23,14 +24,15 @@ export function createSessionStore(filePath, { onError = console.error } = {}) {
     info: (key) => sessions[key],
     set(key, id) {
       if (sessions[key]?.id === id) return;
-      sessions[key] = { id, messages: 0, lastUsed: Date.now() };
+      sessions[key] = { id, messages: 0, lastUsed: Date.now(), contextTokens: 0 };
       save();
     },
-    touch(key, addedMessages, now = Date.now()) {
+    touch(key, addedMessages, now = Date.now(), contextTokens) {
       const entry = sessions[key];
       if (!entry) return;
       entry.messages += addedMessages;
       entry.lastUsed = now;
+      if (contextTokens != null) entry.contextTokens = contextTokens;
       save();
     },
     clear(key) {

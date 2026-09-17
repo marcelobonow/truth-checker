@@ -1,15 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { Client, Events, GatewayIntentBits, InteractionContextType, MessageFlags } from 'discord.js';
 import { createSessionStore } from './sessions.js';
 import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
 import { createInflight } from './inflight.js';
 import { splitMessage } from './split.js';
-import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, selectContext, parseDirective } from './bridge.js';
+import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, shouldReply, selectContext, parseDirective, formatStatus, sessionResetReason } from './bridge.js';
 import { describeEvent } from './claude.js';
+import { fetchUsage, formatUsage } from './usage.js';
 import { logger } from './logger.js';
-import { TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MODEL, EFFORT, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
+import { TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MODEL, EFFORT, JUDGE, WEB_MAX_TURNS, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -46,8 +47,13 @@ const config = {
   extraPrompt: { web: prompts.web.text, full: prompts.full.text },
   model: { web: MODEL.web || undefined, full: MODEL.full || undefined },
   effort: { web: EFFORT.web || undefined, full: EFFORT.full || undefined },
-  session: { maxMessages: SESSION.maxMessages, idleMs: SESSION.idleMinutes * 60_000 },
+  maxTurns: { web: WEB_MAX_TURNS || undefined },
+  judge: JUDGE ? { model: JUDGE.model || undefined, effort: JUDGE.effort || undefined, timeoutMs: 60_000 } : null,
+  session: { maxMessages: SESSION.maxMessages, maxContextTokens: SESSION.maxContextTokens, idleMs: SESSION.idleMinutes * 60_000 },
 };
+// O Discord repete TypingStart a cada ~10 s enquanto a pessoa digita: o prazo
+// após "digitando" precisa cobrir esse intervalo, senão o lote fecha no meio.
+config.typingDelayMs = Math.max(config.batchDelayMs, 12_000);
 const token = required('DISCORD_TOKEN');
 if (config.targetUserIds.length === 0) {
   console.error('Preencha TARGET_USER_IDS em src/settings.js');
@@ -61,6 +67,10 @@ if (RESET_ON_START) {
 }
 const queue = createQueue();
 const inflight = createInflight();
+// Por sessão: timestamp da mensagem mais recente já enviada ao Claude. A
+// sessão retomada lembra o que recebeu, então cada rodada só acrescenta o que
+// veio depois; na primeira rodada (sessão nova) vai o contexto completo.
+const sentUpTo = new Map();
 const batcher = createBatcher({
   delayMs: config.batchDelayMs,
   onFlush: (key, items) => {
@@ -71,11 +81,24 @@ const batcher = createBatcher({
 });
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageTyping],
 });
 
-client.once(Events.ClientReady, (c) => {
+// Registro global: mudanças podem levar até ~1h para aparecer no autocomplete.
+const COMMANDS = [
+  { name: 'reset', description: 'Reinicia a sessão do Claude neste servidor', contexts: [InteractionContextType.Guild] },
+  { name: 'status', description: 'Mostra se o bot está online e o tamanho da sessão atual', contexts: [InteractionContextType.Guild] },
+];
+
+client.once(Events.ClientReady, async (c) => {
+  c.user.setPresence({ status: 'online' });
   logger.info(`conectado como ${c.user.tag}`);
+  try {
+    await c.application.commands.set(COMMANDS);
+    logger.info(`slash commands registrados: ${COMMANDS.map((cmd) => `/${cmd.name}`).join(', ')}`);
+  } catch (err) {
+    logger.error({ err }, 'falha ao registrar slash commands');
+  }
   logger.info({
     usuarios: config.targetUserIds,
     acessoTotal: config.fullAccessGuildIds,
@@ -86,8 +109,59 @@ client.once(Events.ClientReady, (c) => {
     promptExtra: { web: prompts.web.file, full: prompts.full.file },
     modelo: config.model,
     esforco: config.effort,
+    juiz: config.judge,
+    webMaxTurns: WEB_MAX_TURNS,
     sessao: SESSION,
   }, 'configuração');
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  const ephemeral = { flags: MessageFlags.Ephemeral };
+  const where = `${interaction.guild.name} #${interaction.channel?.name}`;
+  const who = interaction.member?.displayName ?? interaction.user.displayName;
+  if (!config.targetUserIds.includes(interaction.user.id)) {
+    logger.info({ canal: where, autor: who }, `/${interaction.commandName} recusado: fora da whitelist`);
+    await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
+    return;
+  }
+  const key = sessionKey({ guildId: interaction.guildId, isTarget: true });
+  logger.info({ canal: where, autor: who }, `/${interaction.commandName}`);
+
+  if (interaction.commandName === 'status') {
+    await interaction.deferReply(ephemeral);
+    let usage;
+    try {
+      usage = `Uso do plano (5h/semana): ${formatUsage(await fetchUsage())}.`;
+    } catch (err) {
+      logger.warn(`não consegui consultar o uso do plano (${err.message})`);
+      usage = 'Limite do plano: indisponível.';
+    }
+    await interaction.editReply(`${formatStatus(store.info(key), config.session)} ${usage}`);
+    return;
+  }
+
+  if (interaction.commandName === 'reset') {
+    // Pela fila: se houver execução em andamento nesta sessão, ela salvaria o
+    // session_id antigo ao terminar e desfaria o reset. A fila pode demorar,
+    // e a interação expira em 3 s sem resposta: defer primeiro.
+    await interaction.deferReply(ephemeral);
+    queue.add(async () => {
+      store.clear(key);
+      sentUpTo.delete(key);
+      logger.info({ canal: where }, 'sessão reiniciada');
+      await interaction.editReply('Sessão reiniciada.');
+    }).catch((err) => logger.error({ err }, 'falha no reset'));
+  }
+});
+
+// Autor de um lote em espera começou a digitar: a janela de silêncio recomeça,
+// para a mensagem que ele está escrevendo entrar no mesmo lote.
+client.on(Events.TypingStart, (typing) => {
+  if (typing.user.bot) return;
+  if (batcher.touch(`${typing.channel.id}:${typing.user.id}`, config.typingDelayMs)) {
+    logger.info({ canal: `#${typing.channel.name}`, autor: typing.member?.displayName ?? typing.user.displayName }, `digitando: lote espera mais ${config.typingDelayMs / 1000}s`);
+  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -110,17 +184,6 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
   logger.info({ canal: where, autor: who, mencao: mentionsBot, reply: Boolean(message.reference) }, `mensagem recebida: ${preview(message.cleanContent)}`);
-
-  if (isTarget && message.content.trim() === '!reset') {
-    // Pela fila: se houver execução em andamento nesta sessão, ela salvaria o
-    // session_id antigo ao terminar e desfaria o reset.
-    queue.add(async () => {
-      store.clear(sessionKey({ guildId: message.guildId, isTarget: true }));
-      logger.info({ canal: where }, 'sessão reiniciada');
-      await send(message, 'Sessão reiniciada.');
-    }).catch((err) => logger.error({ err }, 'falha no reset'));
-    return;
-  }
 
   // pessoas mencionadas de verdade (<@id>), menos o bot: o Claude pode marcá-las ou responder a elas
   const mentions = [...message.mentions.users.values()]
@@ -161,6 +224,16 @@ async function resolveReference(message, item) {
 client.on(Events.Error, (err) => logger.error({ err }, 'erro do cliente Discord'));
 process.on('unhandledRejection', (err) => logger.error({ err }, 'rejeição não tratada'));
 
+// Desconecta do gateway antes de sair: o Discord marca offline na hora, em
+// vez de esperar o timeout da conexão que sumiu.
+async function shutdown(signal) {
+  logger.info(`sinal ${signal} recebido, desligando`);
+  await client.destroy();
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
 async function processBatch(items, signal) {
   if (signal.aborted) return; // cancelado enquanto esperava na fila
   await Promise.all(items.map((item) => item.ready));
@@ -171,16 +244,43 @@ async function processBatch(items, signal) {
   const where = `${last.guild.name} #${last.channel.name}`;
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
   const mentions = isTarget ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
-  const context = await fetchContext(items, mentions.map((m) => m.id));
-  const prompt = buildUserMessage({
+  const now = Date.now();
+  // Mesmo critério que askClaude vai aplicar: sessão nova recebe tudo de novo.
+  const fresh = !store.get(key) || sessionResetReason(store.info(key), config.session, now) !== null;
+  if (fresh) sentUpTo.delete(key);
+  const { full: fullContext, fresh: context } = await fetchContext(items, mentions.map((m) => m.id), sentUpTo.get(key));
+  const promptWith = (ctx) => buildUserMessage({
     guildName: last.guild.name,
     channelName: last.channel.name,
     authorName: displayName(last),
     items,
-    context,
+    context: ctx,
     mentions,
     indexed: isTarget,
+    referenceTimestamp: last.createdTimestamp,
   });
+  const prompt = promptWith(context);
+
+  // Sem menção nem reply ao bot, um modelo barato decide antes se vale responder.
+  const forced = items.some((i) => i.replyToBot || i.mentionsBot);
+  if (config.judge && !forced) {
+    logger.info({ canal: where, autor: displayName(last), modelo: config.judge.model, mensagens: items.length, contexto: fullContext.length }, 'julgando se deve responder');
+    const judgeStarted = Date.now();
+    let verdict;
+    try {
+      // o juiz não tem sessão: recebe o contexto completo, não só o novo
+      verdict = await shouldReply({ mode, prompt: promptWith(fullContext), config, signal });
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      throw err;
+    }
+    const judgeStats = { segundos: ((Date.now() - judgeStarted) / 1000).toFixed(1), custoEstimadoUsd: verdict.costUsd };
+    if (!verdict.reply) {
+      logger.info({ canal: where, autor: displayName(last), ...judgeStats }, 'juiz decidiu não responder');
+      return;
+    }
+    logger.info(judgeStats, `juiz liberou a resposta (${verdict.reason})`);
+  }
 
   logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, 'gerando com claude');
   const typing = startTyping(last.channel);
@@ -192,7 +292,14 @@ async function processBatch(items, signal) {
     typing.poke(); // "digitando" enquanto ele pesquisa/usa ferramentas
   };
   try {
-    const res = await askClaude({ key, mode, prompt, store, config, onEvent, signal, messageCount: items.length + context.length });
+    const sessionBefore = store.get(key);
+    const res = await askClaude({ key, mode, prompt, store, config, onEvent, signal, now, messageCount: items.length + context.length });
+    if (!fresh && !res.sessionReset && res.sessionId && res.sessionId !== sessionBefore) {
+      // sessão salva sumiu e o CLI começou outra só com este lote: na próxima rodada vai tudo de novo
+      sentUpTo.delete(key);
+    } else {
+      sentUpTo.set(key, Math.max(...items.map((i) => i.message.createdTimestamp), ...context.map((m) => m.timestamp)));
+    }
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     if (res.sessionReset) logger.info(`sessão reiniciada automaticamente (${res.sessionReset})`);
     const stats = { segundos: elapsed, turnos: res.numTurns, custoEstimadoUsd: res.costUsd, mensagensNaSessao: store.info(key)?.messages };
@@ -237,8 +344,10 @@ async function resolveReplyTarget(channel, entry, index) {
 
 // Últimas mensagens do canal antes do lote, para o Claude entender o assunto.
 // `extraAuthorIds`: pessoas citadas, cujas últimas mensagens também entram.
-async function fetchContext(items, extraAuthorIds = []) {
-  if (CONTEXT.channel <= 0 && CONTEXT.author <= 0) return [];
+// Devolve { full, fresh }: `full` é a seleção completa (para o juiz, que não
+// tem sessão); `fresh` só o que veio depois de `after` (a sessão já viu o resto).
+async function fetchContext(items, extraAuthorIds = [], after = 0) {
+  if (CONTEXT.channel <= 0 && CONTEXT.author <= 0) return { full: [], fresh: [] };
   const first = items[0].message;
   try {
     const fetched = await first.channel.messages.fetch({ limit: Math.min(100, CONTEXT.fetch), before: first.id });
@@ -249,15 +358,19 @@ async function fetchContext(items, extraAuthorIds = []) {
       content: (m.cleanContent ?? '').slice(0, 200),
       timestamp: m.createdTimestamp,
     }));
-    return selectContext(history, {
+    const select = (list) => selectContext(list, {
       channel: CONTEXT.channel,
       author: CONTEXT.author,
-      authorIds: [first.author.id, ...extraAuthorIds],
+      // client.user.id garante as últimas `CONTEXT.author` respostas do próprio
+      // bot no contexto, mesmo se elas não estiverem entre as últimas do canal.
+      authorIds: [first.author.id, client.user.id, ...extraAuthorIds],
       excludeIds: items.map((i) => i.message.id),
     });
+    const full = select(history);
+    return { full, fresh: after > 0 ? select(history.filter((m) => m.timestamp > after)) : full };
   } catch (err) {
     logger.warn(`não consegui ler o histórico do canal (${err.message}); seguindo sem contexto`);
-    return [];
+    return { full: [], fresh: [] };
   }
 }
 

@@ -47,8 +47,8 @@ test('touch acumula mensagens e atualiza lastUsed; info devolve tudo', () => {
   const store = createSessionStore(tmpFile());
   store.set('111', 'sess-a');
   store.touch('111', 12, 1000);
-  store.touch('111', 5, 2000);
-  assert.deepEqual(store.info('111'), { id: 'sess-a', messages: 17, lastUsed: 2000 });
+  store.touch('111', 5, 2000, 42_000);
+  assert.deepEqual(store.info('111'), { id: 'sess-a', messages: 17, lastUsed: 2000, contextTokens: 42_000 });
   assert.equal(store.get('111'), 'sess-a');
 });
 

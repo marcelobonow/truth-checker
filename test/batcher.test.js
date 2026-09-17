@@ -58,3 +58,27 @@ test('add devolve quantas mensagens o lote daquela chave acumulou', () => {
   assert.equal(batcher.add('c1', 'b'), 2);
   assert.equal(batcher.add('c2', 'x'), 1);
 });
+
+test('touch reinicia o temporizador sem adicionar item; sem lote pendente devolve false', async () => {
+  const flushes = [];
+  const batcher = createBatcher({ delayMs: 40, onFlush: (key, items) => flushes.push(items) });
+  assert.equal(batcher.touch('c1'), false);
+  batcher.add('c1', 'a');
+  await sleep(25);
+  assert.equal(batcher.touch('c1'), true);
+  await sleep(25);
+  assert.deepEqual(flushes, []); // 50 ms desde o add, mas só 25 desde o touch
+  await sleep(30);
+  assert.deepEqual(flushes, [['a']]);
+});
+
+test('touch com prazo próprio usa esse prazo em vez do padrão', async () => {
+  const flushes = [];
+  const batcher = createBatcher({ delayMs: 20, onFlush: (key, items) => flushes.push(items) });
+  batcher.add('c1', 'a');
+  batcher.touch('c1', 60);
+  await sleep(40);
+  assert.deepEqual(flushes, []);
+  await sleep(40);
+  assert.deepEqual(flushes, [['a']]);
+});

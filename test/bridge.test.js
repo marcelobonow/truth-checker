@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveMode, shouldHandle, sessionKey, buildUserMessage, isNoReply, askClaude } from '../src/bridge.js';
+import { resolveMode, shouldHandle, sessionKey, buildUserMessage, isNoReply, askClaude, formatStatus } from '../src/bridge.js';
 
 const config = {
   targetUserIds: ['u1', 'u3'],
@@ -249,7 +249,7 @@ function countingStore(initial = {}) {
     get: (k) => map.get(k)?.id,
     info: (k) => map.get(k),
     set: (k, id) => { if (map.get(k)?.id !== id) map.set(k, { id, messages: 0, lastUsed: 0 }); },
-    touch: (k, n, now) => { const e = map.get(k); e.messages += n; e.lastUsed = now; },
+    touch: (k, n, now, tokens) => { const e = map.get(k); e.messages += n; e.lastUsed = now; if (tokens != null) e.contextTokens = tokens; },
     clear: (k) => map.delete(k),
     cleared: [],
   };
@@ -290,7 +290,7 @@ test('askClaude: dentro dos limites, retoma a sessão', async () => {
   assert.equal(store.info('g').messages, 400);
 });
 
-import { skipReason } from '../src/bridge.js';
+import { skipReason, sessionResetReason, shouldReply } from '../src/bridge.js';
 
 test('skipReason explica por que uma mensagem não é analisada', () => {
   const base = { authorId: 'u1', isBot: false, guildId: 'g', channelId: 'c', mentionsBot: false };
@@ -316,6 +316,58 @@ test('askClaude: AbortError propaga sem tentar de novo e repassa o signal ao run
   assert.equal(runner.calls.length, 1);
   assert.equal(runner.calls[0].signal, controller.signal);
   assert.equal(store.get('g'), 's1');
+});
+
+test('formatStatus: sem sessão avisa que não há sessão ativa', () => {
+  assert.equal(formatStatus(null, { maxMessages: 400 }), 'Online. Nenhuma sessão ativa neste servidor.');
+});
+
+test('formatStatus: mostra mensagens/limite, tokens/limite e minutos de inatividade', () => {
+  const info = { messages: 87, lastUsed: 1_000, contextTokens: 42_400 };
+  assert.equal(formatStatus(info, { maxMessages: 400, maxContextTokens: 150_000 }, 1_000 + 12 * 60_000), 'Online. Sessão: 87/400 mensagens, 42k/150k tokens, inativa há 12min.');
+});
+
+test('formatStatus: limites em 0 (desligados) não aparecem; sem contextTokens conta 0', () => {
+  const info = { messages: 50, lastUsed: 0 };
+  assert.equal(formatStatus(info, { maxMessages: 0, maxContextTokens: 0 }, 5 * 60_000), 'Online. Sessão: 50 mensagens, 0k tokens, inativa há 5min.');
+});
+
+test('sessionResetReason: contexto acima de maxContextTokens reinicia', () => {
+  const session = { maxMessages: 400, maxContextTokens: 150_000, idleMs: 0 };
+  assert.equal(sessionResetReason({ messages: 10, lastUsed: 0, contextTokens: 150_000 }, session, 0), 'tokens');
+  assert.equal(sessionResetReason({ messages: 10, lastUsed: 0, contextTokens: 149_999 }, session, 0), null);
+});
+
+test('askClaude: grava o contextTokens do resultado na sessão', async () => {
+  const store = countingStore();
+  const runner = stubRunner(() => ({ ...ok('s1'), contextTokens: 31_000 }));
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config: sessionCfg, runner, messageCount: 2, now: 1 });
+  assert.equal(store.info('g').contextTokens, 31_000);
+});
+
+test('shouldReply: NAO bloqueia; SIM, erro ou falha liberam; sem sessão, sem ferramentas', async () => {
+  const cfg = { ...config, judge: { model: 'haiku', effort: 'low' } };
+  const nao = stubRunner(() => ({ text: ' nao. ', isError: false, subtype: 'success', costUsd: 0.001 }));
+  assert.equal((await shouldReply({ mode: 'web', prompt: 'p', config: cfg, runner: nao })).reply, false);
+  assert.ok(!nao.calls[0].args.includes('--resume'));
+  assert.equal(nao.calls[0].args[nao.calls[0].args.indexOf('--tools') + 1], '');
+  assert.equal(nao.calls[0].args[nao.calls[0].args.indexOf('--model') + 1], 'haiku');
+  assert.match(nao.calls[0].args[nao.calls[0].args.indexOf('--append-system-prompt') + 1], /Premissa: X\./);
+
+  const sim = stubRunner(() => ({ text: 'SIM', isError: false, subtype: 'success' }));
+  assert.equal((await shouldReply({ mode: 'web', prompt: 'p', config: cfg, runner: sim })).reply, true);
+  const erro = stubRunner(() => ({ text: '', isError: true, subtype: 'error_max_turns' }));
+  assert.equal((await shouldReply({ mode: 'web', prompt: 'p', config: cfg, runner: erro })).reply, true);
+  const falha = stubRunner(() => { throw new Error('boom'); });
+  assert.equal((await shouldReply({ mode: 'web', prompt: 'p', config: cfg, runner: falha })).reply, true);
+});
+
+test('askClaude: maxTurns do modo vira --max-turns', async () => {
+  const store = memoryStore();
+  const runner = stubRunner(() => ok('s1'));
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config: { ...config, maxTurns: { web: 4 } }, runner });
+  const args = runner.calls[0].args;
+  assert.equal(args[args.indexOf('--max-turns') + 1], '4');
 });
 
 import { parseDirective } from '../src/bridge.js';
