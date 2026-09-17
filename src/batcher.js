@@ -30,5 +30,7 @@ export function createBatcher({ delayMs, onFlush, onError = console.error }) {
       arm(key, entry, ms);
       return true;
     },
+    // Lotes ainda esperando o prazo fechar.
+    size: () => pending.size,
   };
 }

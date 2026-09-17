@@ -82,3 +82,16 @@ test('touch com prazo próprio usa esse prazo em vez do padrão', async () => {
   await sleep(40);
   assert.deepEqual(flushes, [['a']]);
 });
+
+test('size conta os lotes esperando fechar e zera depois do flush', async () => {
+  const flushed = [];
+  const batcher = createBatcher({ delayMs: 10, onFlush: (k, items) => flushed.push(k) });
+  assert.equal(batcher.size(), 0);
+  batcher.add('a', 1);
+  batcher.add('a', 2);
+  batcher.add('b', 3);
+  assert.equal(batcher.size(), 2);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(batcher.size(), 0);
+  assert.deepEqual(flushed, ['a', 'b']);
+});

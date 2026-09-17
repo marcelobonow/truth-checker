@@ -25,3 +25,19 @@ test('tarefa que falha rejeita a própria promise sem travar a fila', async () =
   await assert.rejects(failing, /boom/);
   assert.equal(await next, 'ok');
 });
+
+test('size conta a tarefa em andamento e as que esperam; zera quando tudo termina', async () => {
+  const queue = createQueue();
+  assert.equal(queue.size(), 0);
+  let release;
+  const a = queue.add(() => new Promise((r) => (release = r)));
+  const b = queue.add(async () => 'b');
+  const c = queue.add(async () => { throw new Error('x'); });
+  assert.equal(queue.size(), 3);
+  await sleep(0); // a primeira tarefa começa num microtask
+  release();
+  await a;
+  await b;
+  await c.catch(() => {});
+  assert.equal(queue.size(), 0);
+});

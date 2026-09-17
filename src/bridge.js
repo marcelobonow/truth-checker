@@ -1,4 +1,5 @@
-import { buildArgs, buildJudgeArgs, runClaude, NO_REPLY } from './claude.js';
+import * as claude from './claude.js';
+import { NO_REPLY } from './prompts.js';
 
 // Regras de roteamento (ver docs/superpowers/specs, §2 e §3).
 
@@ -26,13 +27,23 @@ export function sessionKey({ guildId, isTarget }) {
 
 // Resposta do "/status": tamanho da sessão atual (mensagens/limite) e
 // inatividade, para decidir se vale a pena `/reset` antes de continuar.
-export function formatStatus(info, { maxMessages, maxContextTokens }, now = Date.now()) {
-  if (!info) return 'Online. Nenhuma sessão ativa neste servidor.';
-  const idleMin = Math.floor((now - info.lastUsed) / 60_000);
-  const limit = maxMessages > 0 ? `/${maxMessages}` : '';
-  const k = (n) => `${Math.round(n / 1000)}k`;
-  const tokens = `${k(info.contextTokens ?? 0)}${maxContextTokens > 0 ? `/${k(maxContextTokens)}` : ''} tokens`;
-  return `Online. Sessão: ${info.messages}${limit} mensagens, ${tokens}, inativa há ${idleMin}min.`;
+// `queued` (opcional): gerações na fila serial, contando a em andamento;
+// `waiting` (opcional): lotes ainda na janela de silêncio, antes de entrar na fila.
+export function formatStatus(info, { maxMessages, maxContextTokens, queued, waiting }, now = Date.now()) {
+  let text;
+  if (!info) {
+    text = 'Online. Nenhuma sessão ativa neste servidor.';
+  } else {
+    const idleMin = Math.floor((now - info.lastUsed) / 60_000);
+    const limit = maxMessages > 0 ? `/${maxMessages}` : '';
+    const k = (n) => `${Math.round(n / 1000)}k`;
+    const tokens = `${k(info.contextTokens ?? 0)}${maxContextTokens > 0 ? `/${k(maxContextTokens)}` : ''} tokens`;
+    text = `Online. Sessão: ${info.messages}${limit} mensagens, ${tokens}, inativa há ${idleMin}min.`;
+  }
+  if (queued == null) return text;
+  const fila = queued === 0 ? 'Fila: vazia' : `Fila: ${queued} ${queued === 1 ? 'geração' : 'gerações'} (1 em andamento)`;
+  const espera = waiting > 0 ? `; ${waiting} ${waiting === 1 ? 'lote' : 'lotes'} esperando fechar` : '';
+  return `${text} ${fila}${espera}.`;
 }
 
 // Contexto do canal: as últimas `channel` mensagens + as últimas `author`
@@ -84,22 +95,26 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   return [header, 'contexto recente do canal (mais antigo primeiro):', ...contextLines, 'mensagens novas:', body].join('\n');
 }
 
-// Primeira linha "[responder: #n]" da resposta: pedido de reply na mensagem #n
-// do contexto (1-based). Devolve o índice e o texto sem a linha.
+// "[responder: #n]" no começo de uma das primeiras linhas da resposta: pedido
+// de reply na mensagem #n do contexto (1-based). Devolve o índice e o texto
+// sem a diretiva e sem o que veio antes dela (alguns modelos anunciam "a
+// resposta para postar é:" antes; isso não vai para o Discord).
 const DIRECTIVE_RE = /^\s*\[responder:\s*#(\d+)\]\s*\n?/i;
+const DIRECTIVE_MAX_LINE = 3; // linhas de preâmbulo toleradas antes da diretiva
 
 export function parseDirective(text) {
-  const m = text.match(DIRECTIVE_RE);
-  if (!m) return { replyTo: null, text };
-  return { replyTo: Number(m[1]), text: text.slice(m[0].length).replace(/^\s+/, '') };
+  const lines = text.split('\n');
+  for (let i = 0; i < Math.min(lines.length, DIRECTIVE_MAX_LINE + 1); i++) {
+    const rest = lines.slice(i).join('\n');
+    const m = rest.match(DIRECTIVE_RE);
+    if (m) return { replyTo: Number(m[1]), text: rest.slice(m[0].length).replace(/^\s+/, '') };
+  }
+  return { replyTo: null, text };
 }
 
 export function isNoReply(text) {
   return text.trim().replace(/^[`\s]+|[`\s.!]+$/g, '') === NO_REPLY;
 }
-
-// Mensagem exata do CLI ao retomar sessão inexistente (verificada em 2026-09-17).
-const RESUME_FAILURE = /No conversation found with session ID/i;
 
 // Motivo para começar uma sessão nova em vez de retomar (ou null).
 export function sessionResetReason(info, { maxMessages, maxContextTokens = 0, idleMs }, now) {
@@ -112,14 +127,14 @@ export function sessionResetReason(info, { maxMessages, maxContextTokens = 0, id
 
 // Filtro barato (modelo `config.judge.model`, sem sessão, sem ferramentas):
 // true se vale gerar a resposta de verdade. Qualquer falha libera a resposta
-// (o modelo principal ainda pode dizer NO_REPLY).
-export async function shouldReply({ mode, prompt, config, runner = runClaude, signal }) {
-  const cwd = mode === 'full' ? config.workDir : config.webDir;
+// (o modelo principal ainda pode dizer NO_REPLY). Roda sempre no webDir: não
+// usa ferramentas, então não precisa (nem deve) enxergar o projeto.
+// `backend` (claude.js ou commandcode.js) monta os argumentos e roda o CLI.
+export async function shouldReply({ mode, prompt, config, backend = claude, runner = backend.run, signal }) {
   try {
     const res = await runner({
-      prompt,
-      args: buildJudgeArgs({ extraPrompt: config.extraPrompt?.[mode], model: config.judge?.model, effort: config.judge?.effort }),
-      cwd,
+      ...backend.buildRequest({ kind: 'judge', mode, prompt, extraPrompt: config.extraPrompt?.[mode], model: config.judge?.model, effort: config.judge?.effort }),
+      cwd: config.webDir,
       bin: config.bin,
       timeoutMs: config.judge?.timeoutMs ?? config.timeoutMs,
       signal,
@@ -136,14 +151,14 @@ export async function shouldReply({ mode, prompt, config, runner = runClaude, si
 // Uma execução do claude na sessão `key`, com retomada; se a sessão salva não
 // existir mais, apaga e tenta uma vez do zero. `messageCount` (mensagens do
 // lote + contexto) alimenta o reinício automático por volume/inatividade.
-export async function askClaude({ key, mode, prompt, store, config, runner = runClaude, onEvent, messageCount = 0, now = Date.now(), signal }) {
+export async function askClaude({ key, mode, prompt, store, config, backend = claude, runner = backend.run, onEvent, messageCount = 0, now = Date.now(), signal }) {
   const cwd = mode === 'full' ? config.workDir : config.webDir;
   const sessionReset = config.session ? sessionResetReason(store.info?.(key), config.session, now) : null;
   if (sessionReset) store.clear(key);
   const run = (sessionId) =>
     runner({
-      prompt,
-      args: buildArgs({
+      ...backend.buildRequest({
+        kind: 'reply',
         mode,
         sessionId,
         workDir: cwd,
@@ -151,6 +166,7 @@ export async function askClaude({ key, mode, prompt, store, config, runner = run
         model: config.model?.[mode],
         effort: config.effort?.[mode],
         maxTurns: config.maxTurns?.[mode],
+        prompt,
       }),
       cwd,
       bin: config.bin,
@@ -164,8 +180,7 @@ export async function askClaude({ key, mode, prompt, store, config, runner = run
   try {
     result = await run(sessionId);
   } catch (err) {
-    // stderr completo (a mensagem do erro é truncada e pode esconder a frase)
-    if (err.name === 'AbortError' || !sessionId || !RESUME_FAILURE.test(`${err.stderr ?? ''}\n${err.message}`)) throw err;
+    if (err.name === 'AbortError' || !sessionId || !backend.isSessionMissing(err)) throw err;
     store.clear(key);
     result = await run(undefined);
   }

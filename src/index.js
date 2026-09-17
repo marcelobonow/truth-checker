@@ -7,15 +7,19 @@ import { createBatcher } from './batcher.js';
 import { createInflight } from './inflight.js';
 import { splitMessage } from './split.js';
 import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, shouldReply, selectContext, parseDirective, formatStatus, sessionResetReason } from './bridge.js';
-import { describeEvent } from './claude.js';
+import { selectBackend } from './backend.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { logger } from './logger.js';
-import { TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MODEL, EFFORT, JUDGE, WEB_MAX_TURNS, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
 
 const list = (value) => (value ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+function fatal(err) {
+  console.error(err.message);
+  process.exit(1);
+}
 function required(name) {
   if (!env[name]) {
     console.error(`Faltou ${name} no .env (veja .env.example)`);
@@ -24,9 +28,19 @@ function required(name) {
   return env[name];
 }
 
-// prompt.web.md / prompt.full.md (fallback: prompt.md), anexados ao system prompt
+// CLI que gera as respostas (claude ou command-code) e os modelos dele
+const { backend, settings: { MODEL, EFFORT, JUDGE, WEB_MAX_TURNS } } = await selectBackend(BACKEND).catch(fatal);
+let bin;
+try {
+  bin = backend.resolveBin(env);
+} catch (err) {
+  fatal(err);
+}
+
+// Instruções extras anexadas ao system prompt, o primeiro que existir:
+// prompt.<modo>.<backend>.md (ex.: prompt.web.commandcode.md), prompt.<modo>.md, prompt.md
 function loadPrompt(mode) {
-  for (const name of [`prompt.${mode}.md`, 'prompt.md']) {
+  for (const name of [`prompt.${mode}.${backend.name}.md`, `prompt.${mode}.md`, 'prompt.md']) {
     const file = path.join(ROOT, name);
     if (fs.existsSync(file)) return { file: name, text: fs.readFileSync(file, 'utf8') };
   }
@@ -40,8 +54,8 @@ const config = {
   watchChannelIds: list(env.WATCH_CHANNEL_IDS),
   mentionAnyone: Boolean(MENTION_ANYONE),
   workDir: env.WORK_DIR || ROOT,
-  webDir: ROOT,
-  bin: env.CLAUDE_BIN || 'claude',
+  webDir: backend.webDir(ROOT),
+  bin,
   timeoutMs: Number(env.CLAUDE_TIMEOUT_MS) || 600_000,
   batchDelayMs: Number(env.BATCH_DELAY_MS) || 7_000,
   extraPrompt: { web: prompts.web.text, full: prompts.full.text },
@@ -87,7 +101,7 @@ const client = new Client({
 // Registro global: mudanças podem levar até ~1h para aparecer no autocomplete.
 const COMMANDS = [
   { name: 'reset', description: 'Reinicia a sessão do Claude neste servidor', contexts: [InteractionContextType.Guild] },
-  { name: 'status', description: 'Mostra se o bot está online e o tamanho da sessão atual', contexts: [InteractionContextType.Guild] },
+  { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -100,6 +114,8 @@ client.once(Events.ClientReady, async (c) => {
     logger.error({ err }, 'falha ao registrar slash commands');
   }
   logger.info({
+    backend: backend.name,
+    bin: config.bin,
     usuarios: config.targetUserIds,
     acessoTotal: config.fullAccessGuildIds,
     canais: config.watchChannelIds.length ? config.watchChannelIds : 'todos',
@@ -131,13 +147,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.commandName === 'status') {
     await interaction.deferReply(ephemeral);
     let usage;
-    try {
-      usage = `Uso do plano (5h/semana): ${formatUsage(await fetchUsage())}.`;
-    } catch (err) {
-      logger.warn(`não consegui consultar o uso do plano (${err.message})`);
-      usage = 'Limite do plano: indisponível.';
+    if (!backend.supportsUsage) {
+      usage = 'Uso do plano: só disponível com o Claude Code.';
+    } else {
+      try {
+        usage = `Uso do plano (5h/semana): ${formatUsage(await fetchUsage())}.`;
+      } catch (err) {
+        logger.warn(`não consegui consultar o uso do plano (${err.message})`);
+        usage = 'Limite do plano: indisponível.';
+      }
     }
-    await interaction.editReply(`${formatStatus(store.info(key), config.session)} ${usage}`);
+    await interaction.editReply(`${formatStatus(store.info(key), { ...config.session, queued: queue.size(), waiting: batcher.size() })} ${usage}`);
     return;
   }
 
@@ -261,6 +281,9 @@ async function processBatch(items, signal) {
   });
   const prompt = promptWith(context);
 
+  // "digitando" desde o juiz (para testar se o indicador aparece)
+  const typing = startTyping(last.channel);
+
   // Sem menção nem reply ao bot, um modelo barato decide antes se vale responder.
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   if (config.judge && !forced) {
@@ -269,31 +292,32 @@ async function processBatch(items, signal) {
     let verdict;
     try {
       // o juiz não tem sessão: recebe o contexto completo, não só o novo
-      verdict = await shouldReply({ mode, prompt: promptWith(fullContext), config, signal });
+      verdict = await shouldReply({ mode, prompt: promptWith(fullContext), config, backend, signal });
     } catch (err) {
+      typing.stop();
       if (err.name === 'AbortError') return;
       throw err;
     }
     const judgeStats = { segundos: ((Date.now() - judgeStarted) / 1000).toFixed(1), custoEstimadoUsd: verdict.costUsd };
     if (!verdict.reply) {
+      typing.stop();
       logger.info({ canal: where, autor: displayName(last), ...judgeStats }, 'juiz decidiu não responder');
       return;
     }
     logger.info(judgeStats, `juiz liberou a resposta (${verdict.reason})`);
   }
 
-  logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, 'gerando com claude');
-  const typing = startTyping(last.channel);
+  logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${backend.name}`);
   const started = Date.now();
   const onEvent = (event) => {
-    const activity = describeEvent(event);
+    const activity = backend.describeEvent(event);
     if (!activity) return;
-    logger.info(`claude: ${activity}`);
+    logger.info(`${backend.name}: ${activity}`);
     typing.poke(); // "digitando" enquanto ele pesquisa/usa ferramentas
   };
   try {
     const sessionBefore = store.get(key);
-    const res = await askClaude({ key, mode, prompt, store, config, onEvent, signal, now, messageCount: items.length + context.length });
+    const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length });
     if (!fresh && !res.sessionReset && res.sessionId && res.sessionId !== sessionBefore) {
       // sessão salva sumiu e o CLI começou outra só com este lote: na próxima rodada vai tudo de novo
       sentUpTo.delete(key);
@@ -304,10 +328,10 @@ async function processBatch(items, signal) {
     if (res.sessionReset) logger.info(`sessão reiniciada automaticamente (${res.sessionReset})`);
     const stats = { segundos: elapsed, turnos: res.numTurns, custoEstimadoUsd: res.costUsd, mensagensNaSessao: store.info(key)?.messages };
     if (res.isError) {
-      logger.error({ ...stats, subtype: res.subtype }, `claude retornou erro: ${preview(res.text)}`);
-      await send(last, `⚠️ Claude retornou erro (${res.subtype}): ${res.text}`);
+      logger.error({ ...stats, subtype: res.subtype }, `${backend.name} retornou erro: ${preview(res.text)}`);
+      await send(last, `⚠️ ${backend.name} retornou erro (${res.subtype}): ${res.text}`);
     } else if (isNoReply(res.text)) {
-      logger.info(stats, 'claude decidiu não responder');
+      logger.info(stats, `${backend.name} decidiu não responder`);
     } else {
       const { replyTo, text } = isTarget ? parseDirective(res.text) : { replyTo: null, text: res.text };
       const target = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
@@ -377,7 +401,7 @@ async function fetchContext(items, extraAuthorIds = [], after = 0) {
 // Indicador "digitando" dura ~10 s por envio: renova a cada 8 s enquanto o
 // lote roda, e na hora (poke) a cada atividade do Claude.
 function startTyping(channel) {
-  const tick = () => channel.sendTyping().catch(() => {});
+  const tick = () => channel.sendTyping().catch((err) => logger.warn(`digitando falhou: ${err.message}`));
   tick();
   const timer = setInterval(tick, 8_000);
   return { stop: () => clearInterval(timer), poke: tick };

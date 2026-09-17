@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildArgs, parseResult, describeEvent } from '../src/claude.js';
+import { buildArgs, buildJudgeArgs, parseResult, describeEvent } from '../src/claude.js';
 
 function flagValue(args, flag) {
   const i = args.indexOf(flag);
@@ -235,4 +235,28 @@ test('system prompt explica pessoas citadas, índices #n e a diretiva [responder
   assert.match(prompt, /pessoas citadas/);
   assert.match(prompt, /\[responder: #n\]/);
   assert.match(prompt, /<@id>/);
+});
+
+import * as claude from '../src/claude.js';
+
+test('backend claude: buildRequest reply/judge embrulha buildArgs/buildJudgeArgs e manda o prompt no stdin', () => {
+  const reply = claude.buildRequest({ kind: 'reply', mode: 'web', prompt: 'oi', sessionId: 's1', maxTurns: 4 });
+  assert.deepEqual(reply.args, buildArgs({ mode: 'web', sessionId: 's1', maxTurns: 4 }));
+  assert.equal(reply.prompt, 'oi');
+  const judge = claude.buildRequest({ kind: 'judge', mode: 'web', prompt: 'oi', extraPrompt: 'P.', model: 'haiku' });
+  assert.deepEqual(judge.args, buildJudgeArgs({ extraPrompt: 'P.', model: 'haiku' }));
+  assert.equal(judge.prompt, 'oi');
+});
+
+test('backend claude: isSessionMissing reconhece a mensagem do CLI; webDir é a raiz; resolveBin usa CLAUDE_BIN', () => {
+  const err = new Error('claude saiu com código 1: x');
+  err.stderr = 'No conversation found with session ID: velha';
+  assert.equal(claude.isSessionMissing(err), true);
+  assert.equal(claude.isSessionMissing(new Error('tempo limite')), false);
+  assert.equal(claude.webDir('C:/bot'), 'C:/bot');
+  assert.equal(claude.resolveBin({ CLAUDE_BIN: 'C:/x/claude.exe' }), 'C:/x/claude.exe');
+  assert.equal(claude.resolveBin({}), 'claude');
+  assert.equal(claude.name, 'claude');
+  assert.equal(claude.supportsUsage, true);
+  assert.equal(claude.run, runClaude);
 });

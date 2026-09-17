@@ -1,0 +1,1 @@
+Pasta vazia de propósito: é o diretório de trabalho do `command-code` no modo web e no juiz (o CLI põe git status e commits do cwd no system prompt e leria um `AGENTS.md`; aqui não há nada para expor).

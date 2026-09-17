@@ -412,7 +412,83 @@ test('parseDirective: tira a linha [responder: #n] do começo e devolve o índic
   assert.deepEqual(parseDirective('  [Responder: #12] \n\ntexto'), { replyTo: 12, text: 'texto' });
 });
 
-test('parseDirective: sem diretiva (ou fora da primeira linha) devolve o texto intacto', () => {
-  assert.deepEqual(parseDirective('oi\n[responder: #3]'), { replyTo: null, text: 'oi\n[responder: #3]' });
+test('parseDirective: sem diretiva devolve o texto intacto', () => {
   assert.deepEqual(parseDirective('só texto'), { replyTo: null, text: 'só texto' });
+});
+
+// ---- backend injetável (commandcode.js segue a mesma interface) ----
+
+import * as commandcode from '../src/commandcode.js';
+
+test('askClaude com backend commandcode: usa buildRequest (mod com system prompt) e o runner do backend', async () => {
+  const store = memoryStore();
+  const runner = stubRunner(() => ok('s1'));
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config, backend: commandcode, runner });
+  const call = runner.calls[0];
+  assert.ok(call.args.includes('--mod'));
+  assert.ok(call.args.some((a) => a.startsWith('systemPrompt=') && a.endsWith('Premissa: X.')));
+  assert.equal(call.prompt, 'oi');
+  assert.equal(call.cwd, 'C:\bot');
+  assert.equal(store.get('g'), 's1');
+});
+
+test('askClaude com backend commandcode: sessão sumida (mensagem do command-code) → repete sem --resume', async () => {
+  const store = memoryStore();
+  store.set('g', 'velha');
+  const runner = stubRunner((opts) => {
+    if (opts.args.includes('--resume')) {
+      const err = new Error('command-code saiu com código 1: Error: No session "velha" found to resume.');
+      err.stderr = 'Error: No session "velha" found to resume.\n';
+      throw err;
+    }
+    return ok('nova');
+  });
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config, backend: commandcode, runner });
+  assert.equal(runner.calls.length, 2);
+  assert.equal(store.get('g'), 'nova');
+});
+
+test('askClaude com backend commandcode: a mensagem do claude não conta como sessão sumida', async () => {
+  const store = memoryStore();
+  store.set('g', 'velha');
+  const runner = stubRunner(() => { throw new Error('claude saiu com código 1: No conversation found with session ID: velha'); });
+  await assert.rejects(askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config, backend: commandcode, runner }));
+  assert.equal(runner.calls.length, 1);
+});
+
+test('shouldReply roda sempre no webDir, mesmo em modo full, e com o buildRequest do backend', async () => {
+  const runner = stubRunner(() => ({ text: 'NAO', isError: false, subtype: 'success' }));
+  const cfg = { ...config, judge: { model: 'deepseek/x', effort: 'low' } };
+  const res = await shouldReply({ mode: 'full', prompt: 'oi', config: cfg, backend: commandcode, runner });
+  assert.equal(res.reply, false);
+  assert.equal(runner.calls[0].cwd, 'C:\bot');
+  assert.ok(runner.calls[0].args.includes('--no-session'));
+  assert.equal(runner.calls[0].args[runner.calls[0].args.indexOf('-m') + 1], 'deepseek/x');
+});
+
+
+test('parseDirective: preâmbulo antes da diretiva é descartado (modelos que anunciam o que vão fazer)', () => {
+  const out = parseDirective('Final result: a resposta para postar em reply ao Reds (#16):\n\n[responder: #16] ad machina kkkk aceito, reds.');
+  assert.equal(out.replyTo, 16);
+  assert.equal(out.text, 'ad machina kkkk aceito, reds.');
+});
+
+test('parseDirective: diretiva só conta no começo de uma linha das primeiras linhas; no meio do texto é texto', () => {
+  const out = parseDirective('sem diretiva aqui\nlinha 2\nlinha 3\nlinha 4\n[responder: #2] tarde demais');
+  assert.equal(out.replyTo, null);
+  assert.equal(out.text, 'sem diretiva aqui\nlinha 2\nlinha 3\nlinha 4\n[responder: #2] tarde demais');
+});
+
+test('formatStatus: com queued mostra quantas gerações estão na fila (ou "nenhuma")', () => {
+  const info = { messages: 5, lastUsed: 0 };
+  assert.equal(formatStatus(info, { maxMessages: 0, maxContextTokens: 0, queued: 3 }, 60_000), 'Online. Sessão: 5 mensagens, 0k tokens, inativa há 1min. Fila: 3 gerações (1 em andamento).');
+  assert.equal(formatStatus(null, { maxMessages: 400, queued: 1 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: 1 geração (1 em andamento).');
+  assert.equal(formatStatus(null, { maxMessages: 400, queued: 0 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: vazia.');
+  assert.equal(formatStatus(null, { maxMessages: 400 }), 'Online. Nenhuma sessão ativa neste servidor.');
+});
+
+test('formatStatus: waiting mostra lotes ainda esperando fechar, junto com a fila', () => {
+  assert.equal(formatStatus(null, { maxMessages: 400, queued: 0, waiting: 2 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: vazia; 2 lotes esperando fechar.');
+  assert.equal(formatStatus(null, { maxMessages: 400, queued: 2, waiting: 1 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: 2 gerações (1 em andamento); 1 lote esperando fechar.');
+  assert.equal(formatStatus(null, { maxMessages: 400, queued: 0, waiting: 0 }), 'Online. Nenhuma sessão ativa neste servidor. Fila: vazia.');
 });

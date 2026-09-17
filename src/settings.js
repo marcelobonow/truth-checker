@@ -4,9 +4,19 @@
 
 // Usuários atendidos pelo bot (qualquer um deles pode usar /reset e /status).
 export const TARGET_USER_IDS = [
-  "***REMOVED***",
-  "***REMOVED***",
-  "***REMOVED***",
+  "***REMOVED***", //Fantasminha
+  "***REMOVED***", //Eu
+  "***REMOVED***", //Vintra
+  "***REMOVED***", //Miyuki
+  "***REMOVED***", //Cap
+  "***REMOVED***", //Alvorada
+  "***REMOVED***", //Marcus
+  "***REMOVED***", //Bravo
+  "***REMOVED***", //Dodecagono
+  "***REMOVED***", //Rada
+  "***REMOVED***", //Caligula
+
+
   // '123456789012345678',
 ];
 
@@ -16,32 +26,14 @@ export const FULL_ACCESS_GUILD_IDS = [
   // '123456789012345678',
 ];
 
+// Qual CLI gera as respostas: 'claude' (Claude Code) ou 'commandcode' (Command
+// Code, https://commandcode.ai). Modelos por backend: settings.claude.js e
+// settings.commandcode.js. Executáveis: CLAUDE_BIN / COMMANDCODE_BIN no .env.
+export const BACKEND = 'commandcode';
+
 // false: só os usuários acima são atendidos (menções de outras pessoas são ignoradas).
 // true: qualquer pessoa que mencionar @bot recebe resposta, sempre em modo web.
 export const MENTION_ANYONE = false;
-
-// Modelo por modo: alias ('sonnet', 'opus', 'haiku') ou nome completo.
-// null = padrão do Claude Code. 'sonnet' no web deixa mais rápido e gasta menos cota.
-export const MODEL = {
-  web: "sonnet",
-  full: "sonnet",
-};
-
-// Esforço por modo: 'low' | 'medium' | 'high' | 'xhigh' | 'max'. null = padrão do CLI.
-export const EFFORT = {
-  web: 'low',
-  full: 'medium',
-};
-
-// Filtro antes da resposta (só quando "responder: se couber", isto é, sem
-// menção nem reply ao bot): um modelo barato decide SIM/NAO. null desliga.
-export const JUDGE = {
-  model: 'haiku',
-  effort: 'low',
-};
-
-// Máximo de idas à web (WebSearch/WebFetch) por resposta no modo web.
-export const WEB_MAX_TURNS = 4;
 
 // Contexto enviado junto com cada lote: busca as últimas `fetch` mensagens do
 // canal, inclui as últimas `channel` delas e, dentro das mesmas `fetch`, as

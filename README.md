@@ -36,7 +36,8 @@ já feito nesta máquina (sem API key). Design completo em
 
 ## Requisitos
 
-- Node 22.9+ (testado com 24) e Claude Code instalado e logado (`claude` no PATH).
+- Node 22.9+ (testado com 24) e Claude Code instalado e logado (`claude` no PATH),
+  ou Command Code (veja [Usar o Command Code](#usar-o-command-code)).
 - Bot criado no [Discord Developer Portal](https://discord.com/developers/applications):
   1. **New Application** → aba **Bot** → **Reset Token** → copie o token.
   2. Em **Privileged Gateway Intents**, ligue **Message Content Intent**.
@@ -51,8 +52,10 @@ já feito nesta máquina (sem API key). Design completo em
 ```
 npm install
 copy .env.example .env      # preencha DISCORD_TOKEN (e WORK_DIR)
-notepad src\settings.js     # TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MODEL, EFFORT
+notepad src\settings.js     # TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, BACKEND
+notepad src\settings.claude.js   # MODEL, EFFORT, JUDGE (settings.commandcode.js para o Command Code)
 notepad prompt.web.md       # persona/premissas do modo web; prompt.full.md para o modo full
+                            # (prompt.web.commandcode.md vale só para o Command Code)
 npm start
 ```
 
@@ -61,7 +64,7 @@ Cada lote processado consome um turno do plano claude.ai.
 
 ## Velocidade e custo
 
-- Em [src/settings.js](src/settings.js): `MODEL.web = 'sonnet'` e
+- Em [src/settings.claude.js](src/settings.claude.js): `MODEL.web = 'sonnet'` e
   `EFFORT.web = 'low'` (padrão) deixam o modo web mais rápido e barato;
   `MODEL.full`/`EFFORT.full` fazem o mesmo para o modo full (`null` = padrão
   do CLI).
@@ -69,6 +72,27 @@ Cada lote processado consome um turno do plano claude.ai.
   `--strict-mcp-config`): system prompt menor a cada chamada.
 - Sessões longas custam mais a cada mensagem (todo o histórico volta ao
   modelo); o reinício automático (`SESSION`) e o `/reset` limitam isso.
+
+## Usar o Command Code
+
+Alternativa ao Claude Code: o [Command Code](https://commandcode.ai) roda os
+mesmos prompts com modelos abertos (DeepSeek, Kimi, GLM, Qwen...).
+
+1. `npm i -g command-code` e `command-code login`.
+2. `BACKEND = 'commandcode'` em [src/settings.js](src/settings.js); modelos e
+   esforço em [src/settings.commandcode.js](src/settings.commandcode.js)
+   (ids em `command-code --list-models`).
+3. `npm start`. O bot acha o CLI pelo PATH (roda o `dist/index.mjs` do pacote
+   pelo node, porque o shim `.cmd` do npm não funciona com `spawn`); se falhar,
+   preencha `COMMANDCODE_BIN` no `.env`.
+
+Como o CLI não tem flags de system prompt nem de ferramentas, o bot carrega o
+mod [commandcode/mod.ts](commandcode/mod.ts) (`--mod`), que anexa o system
+prompt e restringe as ferramentas: modo web e juiz rodam na pasta vazia
+[commandcode/web/](commandcode/web/) só com `web_search`/`web_fetch` (juiz sem
+nenhuma); modo full usa `--yolo` no `WORK_DIR`. Sessões (`--resume`) e reinício
+automático funcionam igual. O `/status` não mostra uso do plano (é da API da
+Anthropic) e o log fica sem custo estimado.
 
 ## Logs
 
