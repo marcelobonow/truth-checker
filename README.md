@@ -16,8 +16,9 @@ já feito nesta máquina (sem API key). Design completo em
   modelo ([src/heuristic.js](src/heuristic.js)): pontua a mensagem ("?",
   interrogativas, pedidos, termos de [src/dicionario.js](src/dicionario.js))
   mais um bônus do contexto recente, e só chama o modelo se passar dos
-  limiares (`JUDGE` em `src/settings.js`; `null` desliga). Mesmo chamado, o
-  modelo ainda pode decidir ficar em silêncio (responde `NO_REPLY`).
+  limiares (`JUDGE` em `src/settings.js`; `null` desliga). Reply a outra
+  pessoa conta -10 e ignora o "?": só um texto denso no assunto passa. Mesmo
+  chamado, o modelo ainda pode decidir ficar em silêncio (responde `NO_REPLY`).
 - Menções de quem não está na whitelist são ignoradas (`MENTION_ANYONE = true`
   em `src/settings.js` liga respostas a qualquer menção, em modo web).
 - Mensagens em sequência são agrupadas: o bot espera `BATCH_DELAY_MS` (7 s)

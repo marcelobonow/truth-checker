@@ -80,3 +80,32 @@ test('parseDictionary: termos com peso, sem duplicatas, comentários ignorados',
   assert.ok(real.length > 500, `dicionário com ${real.length} termos`);
   assert.doesNotThrow(() => compileDictionary(real));
 });
+
+test('scoreMessage: reply a outra pessoa ignora "?" e interrogativas; só o dicionário (sem teto) conta contra o peso negativo', () => {
+  const r = scoreMessage('por que você acha isso?', dict, WEIGHTS, { replyToOther: true });
+  assert.equal(r.score, WEIGHTS.replyToOther, JSON.stringify(r));
+  assert.ok(!r.hits.some((h) => h.includes('tem ?') || h.includes('interrogativa')));
+  const big = compileDictionary(['a1', 'a2', 'a3', 'a4', 'a5']);
+  const topic = scoreMessage('a1 a2 a3 a4 a5 juntos aqui', big, WEIGHTS, { replyToOther: true });
+  assert.equal(topic.score, WEIGHTS.replyToOther + 5, JSON.stringify(topic));
+});
+
+test('judge: pergunta que é reply a outra pessoa não passa, mesmo com contexto; a mesma pergunta solta passa', () => {
+  const context = [
+    { content: 'o estado e o imposto são o problema', authorId: 'x', timestamp: now - 30_000 },
+    { content: 'resposta do bot sobre estado', authorId: 'bot', timestamp: now - 20_000 },
+  ];
+  const item = { content: 'por que o estado cobra imposto?', authorId: 'u', timestamp: now };
+  assert.equal(judge({ items: [{ ...item, replyToOther: true }], context, now, botId: 'bot', dictionary: dict, config: cfg }).reply, false);
+  assert.equal(judge({ items: [item], context, now, botId: 'bot', dictionary: dict, config: cfg }).reply, true);
+});
+
+test('judge: um reply a outra pessoa no lote marca o lote inteiro', () => {
+  const items = [
+    { content: 'não', authorId: 'u', timestamp: now - 1_000, replyToOther: true },
+    { content: 'por que o estado cobra imposto?', authorId: 'u', timestamp: now },
+  ];
+  const r = judge({ items, context: [], now, botId: 'bot', dictionary: dict, config: cfg });
+  assert.equal(r.reply, false);
+  assert.ok(r.hits.some((h) => h.includes('reply a outra pessoa')), JSON.stringify(r.hits));
+});

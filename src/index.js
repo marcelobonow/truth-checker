@@ -225,7 +225,7 @@ client.on(Events.MessageCreate, async (message) => {
   // em paralelo e aguardada antes de montar o texto.
   item.ready = resolveReference(message, item);
   const key = `${message.channelId}:${message.author.id}`;
-  // Autor mandou mensagem nova com o lote dele na fila ou no juiz: cancela e o
+  // Autor mandou mensagem nova com o lote dele na fila ou buscando contexto: cancela e o
   // lote antigo volta para a espera junto com a nova, para uma resposta só.
   // Se a geração de verdade já começou (pesquisa na web etc.), ela segue e a
   // nova mensagem vira um lote novo, julgado e gerado depois.
@@ -298,7 +298,7 @@ async function processBatch(items, run) {
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   if (config.judge && !forced) {
     const verdict = judge({
-      items: items.map((i) => ({ content: i.content, authorId: i.message.author.id, timestamp: i.message.createdTimestamp })),
+      items: items.map((i) => ({ content: i.content, authorId: i.message.author.id, timestamp: i.message.createdTimestamp, replyToOther: Boolean(i.quoted) })),
       context: fullContext,
       now: last.createdTimestamp,
       botId: client.user.id,

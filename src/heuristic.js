@@ -11,6 +11,7 @@ const WEIGHTS = {
   dictionaryCap: 3, // teto do dicionário numa mensagem
   short: -2,
   noise: -3,
+  replyToOther: -10, // reply a outra pessoa (não ao bot): a conversa é deles
   contextTopicCap: 2,
   botRecent: 2,
   sameAuthorAsLastReply: 1,
@@ -71,7 +72,10 @@ export function dictionaryHits(text, dictionary) {
 }
 
 // Pontuação de uma mensagem nova, com a lista do que pontuou.
-export function scoreMessage(raw, dictionary, weights = WEIGHTS) {
+// `replyToOther`: a mensagem é reply a outra pessoa (não ao bot). Aí "?",
+// interrogativas e pedidos são da conversa deles e não contam; só o quanto o
+// texto tem a ver com o assunto (dicionário, sem teto) contra o peso negativo.
+export function scoreMessage(raw, dictionary, weights = WEIGHTS, { replyToOther = false } = {}) {
   const hits = [];
   let score = 0;
   const stripped = String(raw ?? '').replace(URL_RE, ' ').replace(CUSTOM_EMOJI_RE, ' ').replace(EMOJI_RE, ' ');
@@ -79,6 +83,17 @@ export function scoreMessage(raw, dictionary, weights = WEIGHTS) {
   const words = text ? text.split(' ') : [];
   if (words.length === 0 || (words.length === 1 && LAUGH_RE.test(words[0]))) {
     return { score: weights.noise, hits: ['so link/emoji/risada'], text };
+  }
+  if (replyToOther) {
+    score += weights.replyToOther;
+    hits.push(`reply a outra pessoa ${weights.replyToOther}`);
+    const dict = dictionaryHits(text, dictionary);
+    if (dict.length > 0) {
+      const sum = dict.reduce((acc, d) => acc + d.weight, 0);
+      score += sum;
+      hits.push(`dicionario(${sum > 0 ? '+' : ''}${sum}): ${dict.map((d) => d.term).join(', ')}`);
+    }
+    return { score, hits, text };
   }
   if (/\?/.test(raw)) { score += weights.question; hits.push('tem ?'); }
   const interrogative = hasAny(text, INTERROGATIVES);
@@ -106,13 +121,16 @@ export function contextFactor({ ageMs, positionFromEnd, halfLifeMinutes }) {
   return recency * Math.pow(0.8, positionFromEnd);
 }
 
-// Decisão para um lote. `items`: mensagens novas ({ content, authorId, timestamp });
-// `context`: anteriores em ordem cronológica ({ content, authorId, timestamp });
-// `now`: timestamp da mensagem que disparou; `botId`: para achar respostas do bot.
+// Decisão para um lote. `items`: mensagens novas ({ content, authorId, timestamp,
+// replyToOther }); `context`: anteriores em ordem cronológica ({ content,
+// authorId, timestamp }); `now`: timestamp da mensagem que disparou; `botId`:
+// para achar respostas do bot. Se qualquer mensagem nova é reply a outra
+// pessoa, o lote inteiro é tratado como dirigido a ela.
 export function judge({ items, context = [], now, botId, dictionary, config, weights = WEIGHTS }) {
   const { thresholdOwn, thresholdTotal, halfLifeMinutes = 10, maxContextBonus = 3 } = config;
   const ownText = items.map((i) => i.content).join('\n');
-  const own = scoreMessage(ownText, dictionary, weights);
+  const replyToOther = items.some((i) => i.replyToOther);
+  const own = scoreMessage(ownText, dictionary, weights, { replyToOther });
   const hits = own.hits.map((h) => `[nova] ${h}`);
 
   let topic = 0;
