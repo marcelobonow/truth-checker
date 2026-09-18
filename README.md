@@ -7,8 +7,8 @@ já feito nesta máquina (sem API key). Design completo em
 
 ## Comportamento
 
-- Só mensagens dos usuários em `TARGET_USER_IDS` ([src/settings.js](src/settings.js)), em servidores (DMs e bots ignorados).
-- Servidores em `FULL_ACCESS_GUILD_IDS` (mesmo arquivo): Claude com **todas as ferramentas e
+- Só mensagens dos usuários em `TARGET_USER_IDS` ([src/users.js](src/users.example.js), ignorado pelo git), em servidores (DMs e bots ignorados).
+- Servidores em `FULL_ACCESS_GUILD_IDS` (`src/settings.js`): Claude com **todas as ferramentas e
   sem pedir permissão** (programação remota no `WORK_DIR`). Qualquer outro
   servidor: só conversa + WebSearch/WebFetch.
 - Reply a uma mensagem do bot ou menção `@bot` → responde sempre. Outras
@@ -52,7 +52,8 @@ já feito nesta máquina (sem API key). Design completo em
 ```
 npm install
 copy .env.example .env      # preencha DISCORD_TOKEN (e WORK_DIR)
-notepad src\settings.js     # TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, BACKEND
+copy src\users.example.js src\users.js   # TARGET_USER_IDS (fica fora do git)
+notepad src\settings.js     # FULL_ACCESS_GUILD_IDS, BACKEND
 notepad src\settings.claude.js   # MODEL, EFFORT, JUDGE (settings.commandcode.js para o Command Code)
 notepad prompt.web.md       # persona/premissas do modo web; prompt.full.md para o modo full
                             # (prompt.web.commandcode.md vale só para o Command Code)

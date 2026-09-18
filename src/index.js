@@ -70,7 +70,7 @@ const config = {
 config.typingDelayMs = Math.max(config.batchDelayMs, 12_000);
 const token = required('DISCORD_TOKEN');
 if (config.targetUserIds.length === 0) {
-  console.error('Preencha TARGET_USER_IDS em src/settings.js');
+  console.error('Preencha TARGET_USER_IDS em src/users.js (modelo: src/users.example.js)');
   process.exit(1);
 }
 

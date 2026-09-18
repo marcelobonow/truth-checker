@@ -2,27 +2,9 @@
 // IDs do Discord são strings numéricas: ligue o "Modo desenvolvedor"
 // (Configurações → Avançado), botão direito no usuário/servidor → Copiar ID.
 
-// Usuários atendidos pelo bot (qualquer um deles pode usar /reset e /status).
-export const TARGET_USER_IDS = [
-  "***REMOVED***", //Fantasminha
-  "***REMOVED***", //Eu
-  "***REMOVED***", //Vintra
-  "***REMOVED***", //Miyuki
-  "***REMOVED***", //Cap
-  "***REMOVED***", //Alvorada
-  "***REMOVED***", //Marcus
-  "***REMOVED***", //Bravo
-  "***REMOVED***", //Dodecagono
-  "***REMOVED***", //Rada
-  "***REMOVED***", //Caligula
-  "***REMOVED***", //Moon
-  "***REMOVED***", //Horvat
-  "***REMOVED***", //Ryquinox
-  "***REMOVED***", //Sno
-
-
-  // '123456789012345678',
-];
+// Usuários atendidos pelo bot ficam em src/users.js (ignorado pelo git, para
+// não expor os ids de quem participa). Modelo: src/users.example.js.
+export { TARGET_USER_IDS } from './users.js';
 
 // Servidores onde os usuários acima têm acesso total à máquina (modo full).
 // Qualquer outro servidor fica só com conversa + busca na web.
