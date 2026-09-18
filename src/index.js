@@ -6,11 +6,13 @@ import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
 import { createInflight } from './inflight.js';
 import { splitMessage } from './split.js';
-import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, shouldReply, selectContext, parseDirective, formatStatus, sessionResetReason, hasText, mentionsByName } from './bridge.js';
+import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, selectContext, parseDirective, formatStatus, sessionResetReason, hasText, mentionsByName } from './bridge.js';
 import { selectBackend } from './backend.js';
+import { judge, compileDictionary } from './heuristic.js';
+import { parseDictionary } from './dicionario.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { logger } from './logger.js';
-import { BACKEND, TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, JUDGE, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -29,7 +31,7 @@ function required(name) {
 }
 
 // CLI que gera as respostas (claude ou command-code) e os modelos dele
-const { backend, settings: { MODEL, EFFORT, JUDGE, WEB_MAX_TURNS } } = await selectBackend(BACKEND).catch(fatal);
+const { backend, settings: { MODEL, EFFORT, WEB_MAX_TURNS } } = await selectBackend(BACKEND).catch(fatal);
 let bin;
 try {
   bin = backend.resolveBin(env);
@@ -47,6 +49,8 @@ function loadPrompt(mode) {
   return { file: null, text: '' };
 }
 const prompts = { web: loadPrompt('web'), full: loadPrompt('full') };
+// termos do juiz local, compilados uma vez
+const dictionary = compileDictionary(parseDictionary());
 
 const config = {
   targetUserIds: TARGET_USER_IDS.map(String),
@@ -62,7 +66,7 @@ const config = {
   model: { web: MODEL.web || undefined, full: MODEL.full || undefined },
   effort: { web: EFFORT.web || undefined, full: EFFORT.full || undefined },
   maxTurns: { web: WEB_MAX_TURNS || undefined },
-  judge: JUDGE ? { model: JUDGE.model || undefined, effort: JUDGE.effort || undefined, timeoutMs: 60_000 } : null,
+  judge: JUDGE || null,
   session: { maxMessages: SESSION.maxMessages, maxContextTokens: SESSION.maxContextTokens, idleMs: SESSION.idleMinutes * 60_000 },
 };
 // O Discord repete TypingStart a cada ~10 s enquanto a pessoa digita: o prazo
@@ -125,7 +129,7 @@ client.once(Events.ClientReady, async (c) => {
     promptExtra: { web: prompts.web.file, full: prompts.full.file },
     modelo: config.model,
     esforco: config.effort,
-    juiz: config.judge,
+    juiz: config.judge ? { ...config.judge, termos: dictionary.length } : null,
     webMaxTurns: WEB_MAX_TURNS,
     sessao: SESSION,
   }, 'configuração');
@@ -289,33 +293,28 @@ async function processBatch(items, run) {
   });
   const prompt = promptWith(context);
 
-  // "digitando" desde o juiz (para testar se o indicador aparece)
-  const typing = startTyping(last.channel);
-
-  // Sem menção nem reply ao bot, um modelo barato decide antes se vale responder.
+  // Sem menção nem reply ao bot, o juiz local (CPU, sem modelo) decide antes
+  // se vale gerar; recebe o contexto completo, não só o novo.
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   if (config.judge && !forced) {
-    logger.info({ canal: where, autor: displayName(last), modelo: config.judge.model, mensagens: items.length, contexto: fullContext.length }, 'julgando se deve responder');
-    const judgeStarted = Date.now();
-    let verdict;
-    try {
-      // o juiz não tem sessão: recebe o contexto completo, não só o novo
-      verdict = await shouldReply({ mode, prompt: promptWith(fullContext), config, backend, signal });
-    } catch (err) {
-      typing.stop();
-      if (err.name === 'AbortError') return;
-      throw err;
-    }
-    const judgeStats = { segundos: ((Date.now() - judgeStarted) / 1000).toFixed(1), custoEstimadoUsd: verdict.costUsd };
+    const verdict = judge({
+      items: items.map((i) => ({ content: i.content, authorId: i.message.author.id, timestamp: i.message.createdTimestamp })),
+      context: fullContext,
+      now: last.createdTimestamp,
+      botId: client.user.id,
+      dictionary,
+      config: config.judge,
+    });
+    const detail = { canal: where, autor: displayName(last), pontos: `${verdict.own}+${verdict.contextBonus.toFixed(1)}=${verdict.total.toFixed(1)}`, sinais: verdict.hits };
     if (!verdict.reply) {
-      typing.stop();
-      logger.info({ canal: where, autor: displayName(last), ...judgeStats }, `juiz decidiu não responder: ${oneLine(last.cleanContent)}`);
+      logger.info(detail, `juiz local: não responder: ${oneLine(last.cleanContent)}`);
       return;
     }
-    logger.info(judgeStats, `juiz liberou a resposta (${verdict.reason})`);
+    logger.info(detail, 'juiz local: responder');
   }
 
   logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${backend.name}`);
+  const typing = startTyping(last.channel);
   const started = Date.now();
   const onEvent = (event) => {
     const activity = backend.describeEvent(event);

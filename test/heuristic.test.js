@@ -1,0 +1,82 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { normalize, compileTerm, compileDictionary, scoreMessage, contextFactor, judge, WEIGHTS } from '../src/heuristic.js';
+import { parseDictionary, DICIONARIO } from '../src/dicionario.js';
+
+const dict = compileDictionary([{ term: 'estado', weight: 1 }, { term: 'imposto*', weight: 1 }, { term: 'problema%calculo', weight: 2 }, { term: 'bom dia', weight: -2 }]);
+
+test('normalize: minúsculas, sem acento, sem pontuação, espaços simples', () => {
+  assert.equal(normalize('  Olá, PORQUÊ?  não! '), 'ola porque nao');
+});
+
+test('compileTerm: palavra inteira, prefixo (*) e qualquer coisa no meio (%)', () => {
+  assert.ok(compileTerm('estado').test('o estado quebrou'));
+  assert.ok(!compileTerm('estado').test('estadual'));
+  assert.ok(compileTerm('imposto*').test('impostos altos'));
+  assert.ok(compileTerm('problema%calculo').test('o problema do calculo economico'));
+  assert.ok(!compileTerm('problema%calculo').test('problema de um dois tres quatro calculo'));
+});
+
+test('scoreMessage: pergunta com termo do dicionário pontua; risada sozinha é ruído; curta sem ? perde ponto', () => {
+  const q = scoreMessage('Alguém sabe por que o Estado cobra imposto?', dict);
+  assert.ok(q.score >= WEIGHTS.question + WEIGHTS.interrogative + WEIGHTS.request + 2, JSON.stringify(q));
+  assert.ok(q.hits.some((h) => h.startsWith('dicionario(+2)')));
+  assert.equal(scoreMessage('kkkkk', dict).score, WEIGHTS.noise);
+  assert.equal(scoreMessage('https://x.com/a', dict).score, WEIGHTS.noise);
+  const short = scoreMessage('bom dia gente', dict);
+  assert.ok(short.score < 0, JSON.stringify(short));
+});
+
+test('scoreMessage: dicionário tem teto por mensagem', () => {
+  const big = compileDictionary(['a1', 'a2', 'a3', 'a4', 'a5']);
+  const r = scoreMessage('a1 a2 a3 a4 a5 juntos aqui', big);
+  assert.ok(r.hits.some((h) => h.startsWith(`dicionario(+${WEIGHTS.dictionaryCap})`)));
+});
+
+test('contextFactor: decai pela metade a cada meia-vida e 0.8 por posição', () => {
+  assert.equal(contextFactor({ ageMs: 0, positionFromEnd: 0, halfLifeMinutes: 10 }), 1);
+  assert.ok(Math.abs(contextFactor({ ageMs: 10 * 60_000, positionFromEnd: 0, halfLifeMinutes: 10 }) - 0.5) < 1e-9);
+  assert.ok(Math.abs(contextFactor({ ageMs: 0, positionFromEnd: 2, halfLifeMinutes: 10 }) - 0.64) < 1e-9);
+});
+
+const cfg = { thresholdOwn: 3, thresholdTotal: 4, halfLifeMinutes: 10, maxContextBonus: 3 };
+const now = 1_000_000;
+
+test('judge: pergunta sobre o assunto passa; conversa sem pergunta e sem assunto não passa', () => {
+  const yes = judge({ items: [{ content: 'por que o estado cobra imposto?', authorId: 'u', timestamp: now }], context: [], now, botId: 'bot', dictionary: dict, config: cfg });
+  assert.equal(yes.reply, true);
+  const no = judge({ items: [{ content: 'fui no mercado hoje', authorId: 'u', timestamp: now }], context: [], now, botId: 'bot', dictionary: dict, config: cfg });
+  assert.equal(no.reply, false);
+});
+
+test('judge: a mensagem precisa passar o limiar próprio mesmo com contexto forte', () => {
+  const context = [
+    { content: 'o estado e o imposto são o problema', authorId: 'x', timestamp: now - 30_000 },
+    { content: 'resposta do bot sobre estado', authorId: 'bot', timestamp: now - 20_000 },
+  ];
+  const weak = judge({ items: [{ content: 'sim', authorId: 'u', timestamp: now }], context, now, botId: 'bot', dictionary: dict, config: cfg });
+  assert.equal(weak.reply, false);
+  assert.ok(weak.contextBonus > 0);
+});
+
+test('judge: contexto empurra uma mensagem no limite para cima, e o bônus tem teto', () => {
+  const border = { content: 'e o estado?', authorId: 'u', timestamp: now }; // ? (3) + estado (1) = 4 próprio
+  const alone = judge({ items: [border], context: [], now, botId: 'bot', dictionary: dict, config: { ...cfg, thresholdTotal: 5 } });
+  assert.equal(alone.reply, false);
+  const context = [
+    { content: 'imposto e estado', authorId: 'u', timestamp: now - 10_000 },
+    { content: 'bot falou do estado', authorId: 'bot', timestamp: now - 5_000 },
+  ];
+  const helped = judge({ items: [border], context, now, botId: 'bot', dictionary: dict, config: { ...cfg, thresholdTotal: 5 } });
+  assert.equal(helped.reply, true);
+  assert.ok(helped.contextBonus <= cfg.maxContextBonus);
+  assert.ok(helped.hits.some((h) => h.includes('mesmo autor')));
+});
+
+test('parseDictionary: termos com peso, sem duplicatas, comentários ignorados', () => {
+  const entries = parseDictionary({ a: 'estado\n# comentario\nbom dia = -2\nestado = 2\n' });
+  assert.deepEqual(entries.sort((x, y) => x.term.localeCompare(y.term)), [{ term: 'bom dia', weight: -2 }, { term: 'estado', weight: 2 }]);
+  const real = parseDictionary(DICIONARIO);
+  assert.ok(real.length > 500, `dicionário com ${real.length} termos`);
+  assert.doesNotThrow(() => compileDictionary(real));
+});

@@ -19,7 +19,7 @@ function modOption(args, name) {
 }
 
 test('buildRequest web: allowlist só web, sem skills, sem yolo, com teto de turnos; prompt vai no stdin', () => {
-  const { args, prompt } = cc.buildRequest({ kind: 'reply', mode: 'web', prompt: 'oi', maxTurns: 8 });
+  const { args, prompt } = cc.buildRequest({ mode: 'web', prompt: 'oi', maxTurns: 8 });
   assert.ok(args.includes('-p'));
   assert.equal(flagValue(args, '--output-format'), 'json');
   assert.ok(args.includes('--skip-onboarding') && args.includes('--trust') && args.includes('--no-auto-update'));
@@ -31,7 +31,7 @@ test('buildRequest web: allowlist só web, sem skills, sem yolo, com teto de tur
 });
 
 test('buildRequest full: todas as ferramentas e --yolo, sem --no-skills, cwd no system prompt', () => {
-  const { args } = cc.buildRequest({ kind: 'reply', mode: 'full', workDir: 'C:/app', prompt: 'oi' });
+  const { args } = cc.buildRequest({ mode: 'full', workDir: 'C:/app', prompt: 'oi' });
   assert.equal(modOption(args, 'tools'), '*');
   assert.ok(args.includes('--yolo'));
   assert.ok(!args.includes('--no-skills'));
@@ -39,19 +39,8 @@ test('buildRequest full: todas as ferramentas e --yolo, sem --no-skills, cwd no 
   assert.match(modOption(args, 'systemPrompt'), /C:\/app/);
 });
 
-test('buildRequest judge: nenhuma ferramenta, 1 turno, sem sessão, prompt do juiz + extra', () => {
-  const { args } = cc.buildRequest({ kind: 'judge', mode: 'web', prompt: 'oi', extraPrompt: 'Premissa: X.' });
-  assert.equal(modOption(args, 'tools'), '');
-  assert.equal(flagValue(args, '--max-turns'), '1');
-  assert.ok(args.includes('--no-session') && args.includes('--no-skills'));
-  assert.ok(!args.includes('--yolo'));
-  const sys = modOption(args, 'systemPrompt');
-  assert.match(sys, /SIM ou NAO/);
-  assert.ok(sys.endsWith('Premissa: X.'));
-});
-
 test('buildRequest: --mod aponta para commandcode/mod.ts e o system prompt é o do modo + extra', () => {
-  const { args } = cc.buildRequest({ kind: 'reply', mode: 'web', prompt: 'oi', extraPrompt: 'Premissa: X.' });
+  const { args } = cc.buildRequest({ mode: 'web', prompt: 'oi', extraPrompt: 'Premissa: X.' });
   assert.match(flagValue(args, '--mod').replace(/\\/g, '/'), /\/commandcode\/mod\.ts$/);
   const sys = modOption(args, 'systemPrompt');
   assert.match(sys, /Discord/);
@@ -60,11 +49,11 @@ test('buildRequest: --mod aponta para commandcode/mod.ts e o system prompt é o 
 });
 
 test('buildRequest: -m/--effort/--resume só quando informados', () => {
-  const args = cc.buildRequest({ kind: 'reply', mode: 'web', prompt: '', model: 'deepseek/x', effort: 'low', sessionId: 's1' }).args;
+  const args = cc.buildRequest({ mode: 'web', prompt: '', model: 'deepseek/x', effort: 'low', sessionId: 's1' }).args;
   assert.equal(flagValue(args, '-m'), 'deepseek/x');
   assert.equal(flagValue(args, '--effort'), 'low');
   assert.equal(flagValue(args, '--resume'), 's1');
-  const plain = cc.buildRequest({ kind: 'reply', mode: 'web', prompt: '' }).args;
+  const plain = cc.buildRequest({ mode: 'web', prompt: '' }).args;
   assert.ok(!plain.includes('-m') && !plain.includes('--effort') && !plain.includes('--resume'));
 });
 

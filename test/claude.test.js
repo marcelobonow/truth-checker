@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildArgs, buildJudgeArgs, parseResult, describeEvent } from '../src/claude.js';
+import { buildArgs, parseResult, describeEvent } from '../src/claude.js';
 
 function flagValue(args, flag) {
   const i = args.indexOf(flag);
@@ -239,13 +239,10 @@ test('system prompt explica pessoas citadas, índices #n e a diretiva [responder
 
 import * as claude from '../src/claude.js';
 
-test('backend claude: buildRequest reply/judge embrulha buildArgs/buildJudgeArgs e manda o prompt no stdin', () => {
-  const reply = claude.buildRequest({ kind: 'reply', mode: 'web', prompt: 'oi', sessionId: 's1', maxTurns: 4 });
+test('backend claude: buildRequest embrulha buildArgs e manda o prompt no stdin', () => {
+  const reply = claude.buildRequest({ mode: 'web', prompt: 'oi', sessionId: 's1', maxTurns: 4 });
   assert.deepEqual(reply.args, buildArgs({ mode: 'web', sessionId: 's1', maxTurns: 4 }));
   assert.equal(reply.prompt, 'oi');
-  const judge = claude.buildRequest({ kind: 'judge', mode: 'web', prompt: 'oi', extraPrompt: 'P.', model: 'haiku' });
-  assert.deepEqual(judge.args, buildJudgeArgs({ extraPrompt: 'P.', model: 'haiku' }));
-  assert.equal(judge.prompt, 'oi');
 });
 
 test('backend claude: isSessionMissing reconhece a mensagem do CLI; webDir é a raiz; resolveBin usa CLAUDE_BIN', () => {

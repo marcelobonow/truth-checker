@@ -32,28 +32,12 @@ Neste servidor você opera com acesso total à máquina do usuário, no diretór
     ' Ele está programando remotamente: leia, edite e execute o que for pedido e reporte o resultado.',
 };
 
-// Filtro barato antes da resposta de verdade (modo "responder: se couber"):
-// decide só SIM/NAO, sem ferramentas e sem sessão. As premissas do servidor
-// (extraPrompt) entram para ele saber o que conta como "contradiz".
-const JUDGE_PROMPT = `Você é um filtro. Vai receber uma mensagem do Discord com cabeçalho "[discord] ...", talvez um "contexto recente do canal" e as "mensagens novas" do autor. Um assistente responderá em nome do dono do bot só se valer a pena.
-Responda SIM se nas mensagens novas houver uma pergunta, um pedido, ou uma afirmação que contradiz as premissas e posições descritas abaixo. Responda NAO se for conversa entre outras pessoas, comentário sem pergunta, assunto fora das premissas, ou cumprimento/bênção solto no canal ("bom dia", "fica com Deus" etc. sem ser dirigido ao bot).
-Uma mensagem nova que começa com "(em resposta a X: \"...\")" é um reply do autor a X, outra pessoa que não é o bot: o texto citado é o que X disse ao autor. Pergunta ou afirmação dentro da citação não conta (foi dirigida ao autor, não ao bot); avalie só o que o autor escreveu fora da citação. Ex.: "(em resposta a Marcus: \"tu é o hyper?\") não" é uma conversa entre os dois → NAO.
-Na dúvida, SIM. Responda exatamente SIM ou NAO, sem mais nada.`;
-
-
-// System prompt completo: prompt do tipo ('reply' = prompt do modo, 'judge' =
-// filtro SIM/NAO) + instruções extras do servidor (prompt.<modo>.md) no final.
-export function systemPrompt({ kind, mode, workDir, extraPrompt }) {
-  let base;
-  if (kind === 'reply') {
-    const promptFor = MODE_PROMPTS[mode];
-    if (!promptFor) throw new Error(`modo desconhecido: ${mode}`);
-    base = promptFor(workDir);
-  } else if (kind === 'judge') {
-    base = JUDGE_PROMPT;
-  } else {
-    throw new Error(`tipo de prompt desconhecido: ${kind}`);
-  }
+// System prompt completo: prompt do modo + instruções extras do servidor
+// (prompt.<modo>.md) no final.
+export function systemPrompt({ mode, workDir, extraPrompt }) {
+  const promptFor = MODE_PROMPTS[mode];
+  if (!promptFor) throw new Error(`modo desconhecido: ${mode}`);
+  const base = promptFor(workDir);
   return extraPrompt ? `${base}
 
 ${extraPrompt.trim()}` : base;

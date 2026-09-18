@@ -7,7 +7,7 @@ import { systemPrompt } from './prompts.js';
 // O CLI não tem flags de system prompt nem de ferramentas: as duas coisas
 // passam pelo mod em commandcode/mod.ts (`--mod`), que recebe
 // `--mod-option systemPrompt=...` e `--mod-option tools=...` (allowlist;
-// `*` = todas, vazio = nenhuma). Ver docs/superpowers/specs/2026-09-17-backend-commandcode-design.md.
+// `*` = todas). Ver docs/superpowers/specs/2026-09-17-backend-commandcode-design.md.
 
 export const name = 'commandcode';
 export const supportsUsage = false; // /status não tem uso do plano para mostrar
@@ -17,18 +17,16 @@ const MOD = path.join(ROOT, 'commandcode', 'mod.ts');
 // O modelo carrega ferramentas sob demanda via `search_tools`: precisa estar liberada.
 const WEB_TOOLS = 'web_search,web_fetch,search_tools';
 
-// cwd do modo web e do juiz: pasta vazia (o CLI põe git status/commits do cwd
+// cwd do modo web: pasta vazia (o CLI põe git status/commits do cwd
 // no system prompt e leria um AGENTS.md da raiz do bot).
 export function webDir(root) {
   return path.join(root, 'commandcode', 'web');
 }
 
-export function buildRequest({ kind, mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
+export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
   const args = ['-p', '--output-format', 'json', '--skip-onboarding', '--trust', '--no-auto-update',
-    '--mod', MOD, '--mod-option', `systemPrompt=${systemPrompt({ kind, mode, workDir, extraPrompt })}`];
-  if (kind === 'judge') {
-    args.push('--mod-option', 'tools=', '--no-skills', '--no-session', '--max-turns', '1');
-  } else if (mode === 'web') {
+    '--mod', MOD, '--mod-option', `systemPrompt=${systemPrompt({ mode, workDir, extraPrompt })}`];
+  if (mode === 'web') {
     args.push('--mod-option', `tools=${WEB_TOOLS}`, '--no-skills');
     if (maxTurns) args.push('--max-turns', String(maxTurns));
   } else {

@@ -155,29 +155,6 @@ export function sessionResetReason(info, { maxMessages, maxContextTokens = 0, id
   return null;
 }
 
-// Filtro barato (modelo `config.judge.model`, sem sessão, sem ferramentas):
-// true se vale gerar a resposta de verdade. Qualquer falha libera a resposta
-// (o modelo principal ainda pode dizer NO_REPLY). Roda sempre no webDir: não
-// usa ferramentas, então não precisa (nem deve) enxergar o projeto.
-// `backend` (claude.js ou commandcode.js) monta os argumentos e roda o CLI.
-export async function shouldReply({ mode, prompt, config, backend = claude, runner = backend.run, signal }) {
-  try {
-    const res = await runner({
-      ...backend.buildRequest({ kind: 'judge', mode, prompt, extraPrompt: config.extraPrompt?.[mode], model: config.judge?.model, effort: config.judge?.effort }),
-      cwd: config.webDir,
-      bin: config.bin,
-      timeoutMs: config.judge?.timeoutMs ?? config.timeoutMs,
-      signal,
-    });
-    if (res.isError) return { reply: true, reason: `erro do juiz (${res.subtype})` };
-    const verdict = res.text.trim().toUpperCase().replace(/[^A-Z]/g, '');
-    return { reply: verdict !== 'NAO', reason: verdict, costUsd: res.costUsd };
-  } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    return { reply: true, reason: `falha do juiz (${err.message})` };
-  }
-}
-
 // Uma execução do claude na sessão `key`, com retomada; se a sessão salva não
 // existir mais, apaga e tenta uma vez do zero. `messageCount` (mensagens do
 // lote + contexto) alimenta o reinício automático por volume/inatividade.
@@ -188,7 +165,6 @@ export async function askClaude({ key, mode, prompt, store, config, backend = cl
   const run = (sessionId) =>
     runner({
       ...backend.buildRequest({
-        kind: 'reply',
         mode,
         sessionId,
         workDir: cwd,

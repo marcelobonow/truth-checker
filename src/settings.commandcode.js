@@ -14,12 +14,6 @@ export const EFFORT = {
   full: 'high',
 };
 
-// Filtro antes da resposta (só quando "responder: se couber"): decide SIM/NAO.
-// null desliga: o próprio gerador decide (responde NO_REPLY quando não cabe).
-// Desligado aqui porque seria o mesmo modelo julgando duas vezes; para ligar
-// com um modelo mais barato: { model: '...', effort: 'low' }.
-export const JUDGE = null;
-
 // Máximo de turnos por resposta no modo web. Cada busca gasta ~2 turnos
 // (o modelo carrega a ferramenta via search_tools e só depois chama web_search).
 export const WEB_MAX_TURNS = 8;

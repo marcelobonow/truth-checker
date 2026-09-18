@@ -13,13 +13,6 @@ export const EFFORT = {
   full: 'medium',
 };
 
-// Filtro antes da resposta (só quando "responder: se couber", isto é, sem
-// menção nem reply ao bot): um modelo barato decide SIM/NAO. null desliga.
-export const JUDGE = {
-  model: 'haiku',
-  effort: 'low',
-};
-
 // Máximo de idas à web (WebSearch/WebFetch) por resposta no modo web.
 export const WEB_MAX_TURNS = 4;
 

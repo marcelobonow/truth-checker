@@ -5,16 +5,8 @@ export { NO_REPLY };
 
 const WEB_TOOLS = 'WebSearch,WebFetch';
 
-export function buildJudgeArgs({ extraPrompt, model, effort }) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--append-system-prompt', systemPrompt({ kind: 'judge', mode: 'web', extraPrompt }),
-    '--tools', '', '--max-turns', '1', '--strict-mcp-config', '--disable-slash-commands'];
-  if (model) args.push('--model', model);
-  if (effort) args.push('--effort', effort);
-  return args;
-}
-
 export function buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns }) {
-  const prompt = systemPrompt({ kind: 'reply', mode, workDir, extraPrompt });
+  const prompt = systemPrompt({ mode, workDir, extraPrompt });
   // stream-json (exige --verbose): um evento JSON por linha, o último é o resultado
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--append-system-prompt', prompt];
   if (mode === 'web') {
@@ -114,11 +106,8 @@ export const name = 'claude';
 export const supportsUsage = true; // /status consulta o uso do plano claude.ai
 export const run = runClaude;
 
-export function buildRequest({ kind, mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
-  const args = kind === 'judge'
-    ? buildJudgeArgs({ extraPrompt, model, effort })
-    : buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns });
-  return { args, prompt };
+export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
+  return { args: buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns }), prompt };
 }
 
 // Mensagem exata do CLI ao retomar sessão inexistente (verificada em 2026-09-17).

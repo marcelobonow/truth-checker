@@ -11,9 +11,13 @@ já feito nesta máquina (sem API key). Design completo em
 - Servidores em `FULL_ACCESS_GUILD_IDS` (`src/settings.js`): Claude com **todas as ferramentas e
   sem pedir permissão** (programação remota no `WORK_DIR`). Qualquer outro
   servidor: só conversa + WebSearch/WebFetch.
-- Reply a uma mensagem do bot ou menção `@bot` → responde sempre. Outras
-  mensagens → o Claude decide se cabe resposta (pergunta ou afirmação que
-  contradiz as premissas); senão fica em silêncio.
+- Reply a uma mensagem do bot ou menção `@bot` (real ou "@Nome" escrito) →
+  responde sempre. Outras mensagens passam antes por um juiz local, sem
+  modelo ([src/heuristic.js](src/heuristic.js)): pontua a mensagem ("?",
+  interrogativas, pedidos, termos de [src/dicionario.js](src/dicionario.js))
+  mais um bônus do contexto recente, e só chama o modelo se passar dos
+  limiares (`JUDGE` em `src/settings.js`; `null` desliga). Mesmo chamado, o
+  modelo ainda pode decidir ficar em silêncio (responde `NO_REPLY`).
 - Menções de quem não está na whitelist são ignoradas (`MENTION_ANYONE = true`
   em `src/settings.js` liga respostas a qualquer menção, em modo web).
 - Mensagens em sequência são agrupadas: o bot espera `BATCH_DELAY_MS` (7 s)
@@ -53,8 +57,8 @@ já feito nesta máquina (sem API key). Design completo em
 npm install
 copy .env.example .env      # preencha DISCORD_TOKEN (e WORK_DIR)
 copy src\users.example.js src\users.js   # TARGET_USER_IDS (fica fora do git)
-notepad src\settings.js     # FULL_ACCESS_GUILD_IDS, BACKEND
-notepad src\settings.claude.js   # MODEL, EFFORT, JUDGE (settings.commandcode.js para o Command Code)
+notepad src\settings.js     # FULL_ACCESS_GUILD_IDS, BACKEND, JUDGE
+notepad src\settings.claude.js   # MODEL, EFFORT (settings.commandcode.js para o Command Code)
 notepad prompt.web.md       # persona/premissas do modo web; prompt.full.md para o modo full
                             # (prompt.web.commandcode.md vale só para o Command Code)
 npm start
@@ -89,9 +93,9 @@ mesmos prompts com modelos abertos (DeepSeek, Kimi, GLM, Qwen...).
 
 Como o CLI não tem flags de system prompt nem de ferramentas, o bot carrega o
 mod [commandcode/mod.ts](commandcode/mod.ts) (`--mod`), que anexa o system
-prompt e restringe as ferramentas: modo web e juiz rodam na pasta vazia
-[commandcode/web/](commandcode/web/) só com `web_search`/`web_fetch` (juiz sem
-nenhuma); modo full usa `--yolo` no `WORK_DIR`. Sessões (`--resume`) e reinício
+prompt e restringe as ferramentas: modo web roda na pasta vazia
+[commandcode/web/](commandcode/web/) só com `web_search`/`web_fetch`; modo
+full usa `--yolo` no `WORK_DIR`. Sessões (`--resume`) e reinício
 automático funcionam igual. O `/status` não mostra uso do plano (é da API da
 Anthropic) e o log fica sem custo estimado.
 

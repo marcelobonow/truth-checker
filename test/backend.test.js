@@ -8,7 +8,6 @@ test('selectBackend devolve o módulo do backend e o settings de modelos corresp
   const c = await selectBackend('claude');
   assert.equal(c.backend, claude);
   assert.equal(typeof c.settings.MODEL.web, 'string');
-  assert.equal(c.settings.JUDGE.model, 'haiku');
   const cc = await selectBackend('commandcode');
   assert.equal(cc.backend, commandcode);
   assert.match(cc.settings.MODEL.web, /deepseek/);
@@ -22,7 +21,7 @@ test('selectBackend: nome inválido lista os válidos', async () => {
 test('os dois settings de backend exportam a mesma forma', async () => {
   for (const name of ['claude', 'commandcode']) {
     const { settings } = await selectBackend(name);
-    assert.deepEqual(Object.keys(settings).sort(), ['EFFORT', 'JUDGE', 'MODEL', 'WEB_MAX_TURNS']);
+    assert.deepEqual(Object.keys(settings).sort(), ['EFFORT', 'MODEL', 'WEB_MAX_TURNS']);
     assert.ok('web' in settings.MODEL && 'full' in settings.MODEL);
     assert.ok('web' in settings.EFFORT && 'full' in settings.EFFORT);
   }

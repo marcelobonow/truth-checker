@@ -21,6 +21,17 @@ export const BACKEND = 'commandcode';
 // true: qualquer pessoa que mencionar @bot recebe resposta, sempre em modo web.
 export const MENTION_ANYONE = false;
 
+// Juiz local (só quando "responder: se couber", isto é, sem menção nem reply
+// ao bot): pontua as mensagens novas e o contexto na CPU (src/heuristic.js,
+// termos em src/dicionario.js) e só chama o modelo se passar dos limiares.
+// null desliga (chama sempre; o modelo ainda pode responder NO_REPLY).
+export const JUDGE = {
+  thresholdOwn: 3, // as mensagens novas precisam disso sozinhas (ex.: "?" = 3)
+  thresholdTotal: 4, // próprias + bônus do contexto
+  halfLifeMinutes: 10, // peso do contexto cai pela metade a cada tanto
+  maxContextBonus: 3, // teto do que o contexto pode somar
+};
+
 // Contexto enviado junto com cada lote: busca as últimas `fetch` mensagens do
 // canal, inclui as últimas `channel` delas e, dentro das mesmas `fetch`, as
 // últimas `author` de quem escreveu (se tiver menos, entra o que houver).
