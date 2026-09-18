@@ -89,7 +89,7 @@ const batcher = createBatcher({
   delayMs: config.batchDelayMs,
   onFlush: (key, items) => {
     const run = inflight.start(key, items);
-    queue.add(() => processBatch(items, run.signal)).finally(() => inflight.finish(key, run));
+    queue.add(() => processBatch(items, run)).finally(() => inflight.finish(key, run));
   },
   onError: (err) => logger.error({ err }, 'erro no lote'),
 });
@@ -202,10 +202,10 @@ client.on(Events.MessageCreate, async (message) => {
   if (skip) {
     // as próprias respostas do bot também chegam aqui: só em debug, para não poluir
     const level = message.author.id === client.user.id ? 'debug' : 'info';
-    logger[level]({ canal: where, autor: who }, `não analisando (${skip}): ${preview(message.cleanContent)}`);
+    logger[level]({ canal: where, autor: who }, `não analisando (${skip}): ${oneLine(message.cleanContent)}`);
     return;
   }
-  logger.info({ canal: where, autor: who, mencao: mentionsBot, reply: Boolean(message.reference) }, `mensagem recebida: ${preview(message.cleanContent)}`);
+  logger.info({ canal: where, autor: who, mencao: mentionsBot, reply: Boolean(message.reference) }, `mensagem recebida: ${oneLine(message.cleanContent)}`);
 
   // pessoas mencionadas de verdade (<@id>), menos o bot: o Claude pode marcá-las ou responder a elas
   const mentions = [...message.mentions.users.values()]
@@ -221,12 +221,16 @@ client.on(Events.MessageCreate, async (message) => {
   // em paralelo e aguardada antes de montar o texto.
   item.ready = resolveReference(message, item);
   const key = `${message.channelId}:${message.author.id}`;
-  // Autor mandou mensagem nova com o lote dele em geração: cancela e o lote
-  // antigo volta para a espera junto com a nova, para uma resposta só.
+  // Autor mandou mensagem nova com o lote dele na fila ou no juiz: cancela e o
+  // lote antigo volta para a espera junto com a nova, para uma resposta só.
+  // Se a geração de verdade já começou (pesquisa na web etc.), ela segue e a
+  // nova mensagem vira um lote novo, julgado e gerado depois.
   const cancelled = inflight.cancel(key);
   if (cancelled) {
     logger.info({ canal: where, autor: who }, `geração cancelada: autor mandou mensagem nova (${cancelled.length} mensagens voltam ao lote)`);
     for (const old of cancelled) batcher.add(key, old);
+  } else if (inflight.isLocked(key)) {
+    logger.info({ canal: where, autor: who }, 'autor mandou mensagem nova durante a geração: vai para um lote novo, depois da resposta atual');
   }
   const size = batcher.add(key, item);
   logger.info(`esperando ${config.batchDelayMs / 1000}s sem novas mensagens para fechar o lote (${size} na espera)`);
@@ -256,7 +260,8 @@ async function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-async function processBatch(items, signal) {
+async function processBatch(items, run) {
+  const { signal } = run;
   if (signal.aborted) return; // cancelado enquanto esperava na fila
   await Promise.all(items.map((item) => item.ready));
   const last = items.at(-1).message;
@@ -280,6 +285,7 @@ async function processBatch(items, signal) {
     mentions,
     indexed: isTarget,
     referenceTimestamp: last.createdTimestamp,
+    emphasizeQuote: backend.name === 'commandcode',
   });
   const prompt = promptWith(context);
 
@@ -303,7 +309,7 @@ async function processBatch(items, signal) {
     const judgeStats = { segundos: ((Date.now() - judgeStarted) / 1000).toFixed(1), custoEstimadoUsd: verdict.costUsd };
     if (!verdict.reply) {
       typing.stop();
-      logger.info({ canal: where, autor: displayName(last), ...judgeStats }, 'juiz decidiu não responder');
+      logger.info({ canal: where, autor: displayName(last), ...judgeStats }, `juiz decidiu não responder: ${oneLine(last.cleanContent)}`);
       return;
     }
     logger.info(judgeStats, `juiz liberou a resposta (${verdict.reason})`);
@@ -317,6 +323,8 @@ async function processBatch(items, signal) {
     logger.info(`${backend.name}: ${activity}`);
     typing.poke(); // "digitando" enquanto ele pesquisa/usa ferramentas
   };
+  // Daqui em diante mensagem nova do autor não cancela mais (ver inflight.js).
+  inflight.lock(run);
   try {
     const sessionBefore = store.get(key);
     const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length });
@@ -333,7 +341,7 @@ async function processBatch(items, signal) {
       logger.error({ ...stats, subtype: res.subtype }, `${backend.name} retornou erro: ${preview(res.text)}`);
       await send(last, `⚠️ ${backend.name} retornou erro (${res.subtype}): ${res.text}`);
     } else if (isNoReply(res.text)) {
-      logger.info(stats, `${backend.name} decidiu não responder`);
+      logger.info({ canal: where, autor: displayName(last), ...stats }, `${backend.name} decidiu não responder: ${oneLine(last.cleanContent)}`);
     } else {
       const { replyTo, text } = isTarget ? parseDirective(res.text) : { replyTo: null, text: res.text };
       const target = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
@@ -427,7 +435,8 @@ async function send(message, text) {
 
 const uniqueBy = (list, keyOf) => [...new Map(list.map((x) => [keyOf(x), x])).values()];
 const displayName = (message) => message.member?.displayName ?? message.author.displayName;
-const preview = (text) => (text ?? '').replace(/\s+/g, ' ').slice(0, 80);
+const oneLine = (text) => (text ?? '').replace(/\s+/g, ' ');
+const preview = (text) => oneLine(text).slice(0, 80);
 
 client.login(token).catch((err) => {
   logger.error(`falha no login do Discord: ${err.message}`);

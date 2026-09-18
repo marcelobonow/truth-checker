@@ -71,6 +71,15 @@ test('buildUserMessage: várias mensagens numeradas, citação, e "sempre" se al
   ].join('\n'));
 });
 
+test('buildUserMessage: emphasizeQuote repete na citação que o reply não é ao bot', () => {
+  const text = buildUserMessage({
+    guildName: 'S', channelName: 'c', authorName: 'a',
+    items: [{ content: 'não', replyToBot: false, mentionsBot: false, quoted: { author: 'Marcus', content: 'tu é o hyper?' } }],
+    emphasizeQuote: true,
+  });
+  assert.match(text, /^\(em resposta a Marcus, não a você: "tu é o hyper\?"\) não$/m);
+});
+
 test('isNoReply reconhece o sentinela com espaços, pontuação ou crase em volta', () => {
   assert.equal(isNoReply('NO_REPLY'), true);
   assert.equal(isNoReply('  `NO_REPLY`. \n'), true);

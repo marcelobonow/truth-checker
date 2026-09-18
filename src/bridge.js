@@ -92,14 +92,17 @@ const formatTime = (ts) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-export function buildUserMessage({ guildName, channelName, authorName, items, context = [], mentions = [], indexed = false, referenceTimestamp = Date.now() }) {
+// `emphasizeQuote`: modelos menores tomam a pergunta citada num reply a outra
+// pessoa como se fosse para o bot; repete na própria citação que não é.
+export function buildUserMessage({ guildName, channelName, authorName, items, context = [], mentions = [], indexed = false, referenceTimestamp = Date.now(), emphasizeQuote = false }) {
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   let header = `[discord] servidor: ${guildName} | canal: #${channelName} | autor: ${authorName} | responder: ${forced ? 'sempre' : 'se couber'}`;
   if (indexed && mentions.length > 0) {
     header += `\npessoas citadas: ${mentions.map((m) => `${m.name} → <@${m.id}>`).join(', ')}`;
   }
   const lines = items.map((item) => {
-    const quote = item.quoted ? `(em resposta a ${item.quoted.author}: "${item.quoted.content}") ` : '';
+    const who = emphasizeQuote ? `${item.quoted?.author}, não a você` : item.quoted?.author;
+    const quote = item.quoted ? `(em resposta a ${who}: "${item.quoted.content}") ` : '';
     return quote + item.content;
   });
   const body = lines.length === 1 ? lines[0] : lines.map((line, i) => `${i + 1}. ${line}`).join('\n');

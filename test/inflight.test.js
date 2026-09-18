@@ -32,3 +32,26 @@ test('finish remove a entrada; finish de um lote já cancelado (e substituído) 
   inflight.finish('k', second);
   assert.equal(inflight.has('k'), false);
 });
+
+test('lock: lote travado não cancela mais; a chave continua ocupada até finish', () => {
+  const inflight = createInflight();
+  const run = inflight.start('k', ['a']);
+  inflight.lock(run);
+  assert.equal(inflight.isLocked('k'), true);
+  assert.equal(inflight.cancel('k'), null);
+  assert.equal(run.signal.aborted, false);
+  assert.equal(inflight.has('k'), true);
+  inflight.finish('k', run);
+  assert.equal(inflight.has('k'), false);
+  assert.equal(inflight.isLocked('k'), false);
+});
+
+test('lock: um lote novo na mesma chave não herda a trava do anterior', () => {
+  const inflight = createInflight();
+  const first = inflight.start('k', ['a']);
+  inflight.lock(first);
+  const second = inflight.start('k', ['b']);
+  assert.equal(inflight.isLocked('k'), false);
+  assert.deepEqual(inflight.cancel('k'), ['b']);
+  assert.equal(first.signal.aborted, false);
+});
