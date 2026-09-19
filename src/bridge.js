@@ -105,7 +105,9 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   const own = items.map((item) => [...(item.images ?? []).map(formatImage), item.content].filter(Boolean).join(' '));
   const lines = items.map((item, i) => {
     const who = emphasizeQuote ? `${item.quoted?.author}, não a você` : item.quoted?.author;
-    const quote = item.quoted ? `(em resposta a ${who}: "${item.quoted.content}") ` : '';
+    let quote = item.quoted ? `(em resposta a ${who}: "${item.quoted.content}") ` : '';
+    // reply ao bot: a mensagem dele pode ser antiga ou de uma sessão anterior
+    if (item.botQuote) quote = `(em resposta à sua mensagem: "${item.botQuote}") `;
     return quote + own[i];
   });
   const body = lines.length === 1 ? lines[0] : lines.map((line, i) => `${i + 1}. ${line}`).join('\n');

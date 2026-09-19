@@ -80,6 +80,15 @@ test('buildUserMessage: emphasizeQuote repete na citação que o reply não é a
   assert.match(text, /^\(em resposta a Marcus, não a você: "tu é o hyper\?"\) não$/m);
 });
 
+test('buildUserMessage: reply ao bot traz a mensagem dele citada como "sua mensagem"', () => {
+  const text = buildUserMessage({
+    guildName: 'S', channelName: 'c', authorName: 'a',
+    items: [{ content: 'tem certeza?', replyToBot: true, mentionsBot: false, quoted: null, botQuote: 'Mises nasceu em 1881.' }],
+  });
+  assert.match(text, /^\(em resposta à sua mensagem: "Mises nasceu em 1881\."\) tem certeza\?$/m);
+  assert.match(text, /a última: "tem certeza\?"/);
+});
+
 test('isNoReply reconhece o sentinela com espaços, pontuação ou crase em volta', () => {
   assert.equal(isNoReply('NO_REPLY'), true);
   assert.equal(isNoReply('  `NO_REPLY`. \n'), true);

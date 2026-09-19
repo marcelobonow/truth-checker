@@ -222,7 +222,7 @@ client.on(Events.MessageCreate, async (message) => {
   const mentions = [...message.mentions.users.values()]
     .filter((u) => u.id !== client.user.id)
     .map((u) => ({ id: u.id, name: message.mentions.members?.get(u.id)?.displayName ?? u.displayName }));
-  const item = { message, content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions, images: [] };
+  const item = { message, content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, botQuote: null, mentions, images: [] };
   // "@bot" + imagem anexada, ou "@bot" como reply (a citada pode ter imagem),
   // segue mesmo sem texto: a imagem é analisada (só whitelist, só com menção).
   const mayHaveImage = mentionsBot && isTarget && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
@@ -257,8 +257,10 @@ async function resolveReference(message, item) {
   if (!message.reference?.messageId) return null;
   try {
     const ref = await message.fetchReference();
-    if (ref.author.id === client.user.id) item.replyToBot = true;
-    else item.quoted = { author: displayName(ref), content: (ref.cleanContent ?? '').slice(0, 300) };
+    if (ref.author.id === client.user.id) {
+      item.replyToBot = true;
+      item.botQuote = (ref.cleanContent ?? '').slice(0, 300);
+    } else item.quoted = { author: displayName(ref), content: (ref.cleanContent ?? '').slice(0, 300) };
     return ref;
   } catch (err) {
     logger.warn(`mensagem referenciada inacessível (${err.message}); seguindo sem citação`);
@@ -278,22 +280,28 @@ async function attachImages(item, reference, { isTarget, where, who }) {
   if (images.length === 0) return;
   const hint = stripBotMention(item.content, message);
   for (const i of images) logger.info({ canal: where, autor: who, dica: hint || undefined }, `imagem recebida: ${i.name} (${i.size != null ? `${(i.size / 1e6).toFixed(1)} MB, ` : ''}${i.source}) → analisando`);
-  message.channel.sendTyping().catch(() => { });
-  // mesmo contexto que a geração recebe (10 do canal + 5 do autor + 5 do bot),
-  // para o analisador saber do que estão falando
-  const { full: context } = await fetchContext([item]);
-  item.images = await analyzeImages(images, {
-    dir: config.imagesDir,
-    fileBase: message.id,
-    hint,
-    context,
-    backend,
-    config,
-    onResult: (r, seconds) => {
-      if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
-      else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length }, `imagem descrita: ${preview(r.description)}`);
-    },
-  });
+  // "digitando" durante toda a análise: sinaliza que o fluxo já começou e que
+  // o lote fecha em seguida; a geração assume o indicador depois
+  const typing = startTyping(message.channel);
+  try {
+    // mesmo contexto que a geração recebe (10 do canal + 5 do autor + 5 do bot),
+    // para o analisador saber do que estão falando
+    const { full: context } = await fetchContext([item]);
+    item.images = await analyzeImages(images, {
+      dir: config.imagesDir,
+      fileBase: message.id,
+      hint,
+      context,
+      backend,
+      config,
+      onResult: (r, seconds) => {
+        if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
+        else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length }, `imagem descrita: ${preview(r.description)}`);
+      },
+    });
+  } finally {
+    typing.stop();
+  }
 }
 
 // Texto da mensagem sem o "@bot" (cleanContent mostra menções como @Nome).
