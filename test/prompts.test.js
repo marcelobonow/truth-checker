@@ -16,3 +16,17 @@ test('systemPrompt: modo desconhecido lança erro', () => {
   assert.throws(() => systemPrompt({ mode: 'x' }), /modo/i);
   assert.equal(NO_REPLY, 'NO_REPLY');
 });
+
+test('systemPrompt: modo vision descreve imagens, sem o texto do Discord e sem extraPrompt', () => {
+  const vision = systemPrompt({ mode: 'vision', extraPrompt: 'Premissa: X.' });
+  assert.match(vision, /descreve imagens/i);
+  assert.match(vision, /ERRO:/);
+  assert.ok(!vision.includes('Discord'));
+  assert.ok(!vision.includes(NO_REPLY));
+  assert.ok(!vision.includes('Premissa'));
+});
+
+test('systemPrompt: modos de conversa explicam o bloco de imagem', () => {
+  assert.match(systemPrompt({ mode: 'web' }), /\[imagem anexada/);
+  assert.match(systemPrompt({ mode: 'full', workDir: 'x' }), /\[imagem na mensagem citada/);
+});

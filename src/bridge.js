@@ -1,5 +1,6 @@
 import * as claude from './claude.js';
 import { NO_REPLY } from './prompts.js';
+import { formatImage } from './images.js';
 
 // Regras de roteamento (ver docs/superpowers/specs, §2 e §3).
 
@@ -22,8 +23,8 @@ export function shouldHandle(meta, config) {
 }
 
 // Texto de verdade na mensagem (conteúdo bruto, com <@id>): menções de
-// usuário/cargo/canal sozinhas não contam. Mensagem só com imagem, ou só com
-// "@bot" + imagem, não é analisada (o bot não lê imagens).
+// usuário/cargo/canal sozinhas não contam. Mensagem só com imagem não é
+// analisada; "@bot" + imagem passa por outra regra (imagens em index.js).
 export function hasText(rawContent) {
   return (rawContent ?? '').replace(/<[@#][!&]?\d+>/g, '').trim().length > 0;
 }
@@ -100,16 +101,18 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   if (indexed && mentions.length > 0) {
     header += `\npessoas citadas: ${mentions.map((m) => `${m.name} → <@${m.id}>`).join(', ')}`;
   }
-  const lines = items.map((item) => {
+  // o que é do autor: descrições das imagens (src/images.js) no lugar delas, antes do texto
+  const own = items.map((item) => [...(item.images ?? []).map(formatImage), item.content].filter(Boolean).join(' '));
+  const lines = items.map((item, i) => {
     const who = emphasizeQuote ? `${item.quoted?.author}, não a você` : item.quoted?.author;
     const quote = item.quoted ? `(em resposta a ${who}: "${item.quoted.content}") ` : '';
-    return quote + item.content;
+    return quote + own[i];
   });
   const body = lines.length === 1 ? lines[0] : lines.map((line, i) => `${i + 1}. ${line}`).join('\n');
   // Lembrete no fim: a sessão é compartilhada e o lote espera alguns segundos,
   // então há mensagens de outras pessoas antes e depois; deixa explícito a
   // quem e a quê responder.
-  const reminder = `>> responda a ${authorName}: só às mensagens novas acima (a última: "${preview(items.at(-1).content)}"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.`;
+  const reminder = `>> responda a ${authorName}: só às mensagens novas acima (a última: "${preview(own.at(-1))}"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.`;
   if (context.length === 0) return [header, body, reminder].join('\n');
 
   const contextLines = context.map((m, i) => {

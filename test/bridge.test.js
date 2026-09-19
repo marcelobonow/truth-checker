@@ -510,3 +510,23 @@ test('buildUserMessage: lembrete final resume a última mensagem (sem citação,
   });
   assert.ok(text.endsWith(`(a última: "${'x'.repeat(80)}…"). Mensagens de outras pessoas, no contexto ou em rodadas anteriores, são pano de fundo, não o que você responde.`));
 });
+
+test('buildUserMessage: imagens viram blocos antes do texto, depois da citação', () => {
+  const items = [
+    { content: 'o que é isso?', mentionsBot: true, images: [{ source: 'anexo', name: 'print.png', description: 'Uma tela de erro: "NullPointer".' }] },
+    { content: 'e essa?', quoted: { author: 'Ana', content: 'olha' }, images: [
+      { source: 'citada', name: 'foto.jpg', description: 'Praia.' },
+      { source: 'link', name: 'https://x/a.png', error: 'HTTP 404' },
+    ] },
+  ];
+  const text = buildUserMessage({ guildName: 'S', channelName: 'c', authorName: 'Bob', items });
+  assert.match(text, /^1\. \[imagem anexada "print.png": Uma tela de erro: "NullPointer".\] o que é isso\?$/m);
+  assert.match(text, /^2\. \(em resposta a Ana: "olha"\) \[imagem na mensagem citada "foto.jpg": Praia.\] \[imagem do link https:\/\/x\/a.png: não foi possível analisar \(HTTP 404\)\] e essa\?$/m);
+});
+
+test('buildUserMessage: mensagem só com imagem (sem texto) fica só com o bloco', () => {
+  const items = [{ content: '', mentionsBot: true, images: [{ source: 'anexo', name: 'a.png', description: 'Gato.' }] }];
+  const text = buildUserMessage({ guildName: 'S', channelName: 'c', authorName: 'Bob', items });
+  assert.match(text, /\n\[imagem anexada "a.png": Gato.\]\n/);
+  assert.match(text, /a última: "\[imagem anexada "a.png": Gato.\]"/);
+});

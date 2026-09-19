@@ -19,6 +19,12 @@ já feito nesta máquina (sem API key). Design completo em
   limiares (`JUDGE` em `src/settings.js`; `null` desliga). Reply a outra
   pessoa conta -10 e ignora o "?": só um texto denso no assunto passa. Mesmo
   chamado, o modelo ainda pode decidir ficar em silêncio (responde `NO_REPLY`).
+- Imagens: quando alguém da whitelist marca o bot (`@bot`) com uma imagem
+  anexada, um link direto de imagem, ou em reply a uma mensagem com imagem, a
+  imagem é descrita numa chamada separada do CLI (só ferramenta de leitura, na
+  pasta `imagens/`, apagada depois) e a descrição entra no prompt no lugar
+  dela. Sem menção explícita, imagens são ignoradas (`IMAGES` em
+  `src/settings.js`; modelo em `MODEL.vision` de `settings.<backend>.js`).
 - Menções de quem não está na whitelist são ignoradas (`MENTION_ANYONE = true`
   em `src/settings.js` liga respostas a qualquer menção, em modo web).
 - Mensagens em sequência são agrupadas: o bot espera `BATCH_DELAY_MS` (7 s)

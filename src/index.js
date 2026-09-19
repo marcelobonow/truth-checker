@@ -11,8 +11,9 @@ import { selectBackend } from './backend.js';
 import { judge, compileDictionary } from './heuristic.js';
 import { parseDictionary } from './dicionario.js';
 import { fetchUsage, formatUsage } from './usage.js';
+import { collectImages, analyzeImages } from './images.js';
 import { logger } from './logger.js';
-import { BACKEND, TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, JUDGE, CONTEXT, SESSION, RESET_ON_START } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -63,16 +64,21 @@ const config = {
   timeoutMs: Number(env.CLAUDE_TIMEOUT_MS) || 600_000,
   batchDelayMs: Number(env.BATCH_DELAY_MS) || 7_000,
   extraPrompt: { web: prompts.web.text, full: prompts.full.text },
-  model: { web: MODEL.web || undefined, full: MODEL.full || undefined },
-  effort: { web: EFFORT.web || undefined, full: EFFORT.full || undefined },
+  model: { web: MODEL.web || undefined, full: MODEL.full || undefined, vision: MODEL.vision || undefined },
+  effort: { web: EFFORT.web || undefined, full: EFFORT.full || undefined, vision: EFFORT.vision || undefined },
   maxTurns: { web: WEB_MAX_TURNS || undefined },
   judge: JUDGE || null,
+  images: IMAGES,
+  // imagens baixadas para análise (apagadas depois); é o cwd da chamada de
+  // visão, o que limita a ferramenta de leitura a esta pasta
+  imagesDir: path.join(ROOT, 'imagens'),
   session: { maxMessages: SESSION.maxMessages, maxContextTokens: SESSION.maxContextTokens, idleMs: SESSION.idleMinutes * 60_000 },
 };
 // O Discord repete TypingStart a cada ~10 s enquanto a pessoa digita: o prazo
 // após "digitando" precisa cobrir esse intervalo, senão o lote fecha no meio.
 config.typingDelayMs = Math.max(config.batchDelayMs, 12_000);
 const token = required('DISCORD_TOKEN');
+if (config.images.max > 0) fs.mkdirSync(config.imagesDir, { recursive: true });
 if (config.targetUserIds.length === 0) {
   console.error('Preencha TARGET_USER_IDS em src/users.js (modelo: src/users.example.js)');
   process.exit(1);
@@ -130,6 +136,7 @@ client.once(Events.ClientReady, async (c) => {
     modelo: config.model,
     esforco: config.effort,
     juiz: config.judge ? { ...config.judge, termos: dictionary.length } : null,
+    imagens: config.images.max > 0 ? { ...config.images, modelo: config.model.vision ?? config.model.web ?? 'padrão do CLI' } : null,
     webMaxTurns: WEB_MAX_TURNS,
     sessao: SESSION,
   }, 'configuração');
@@ -215,15 +222,20 @@ client.on(Events.MessageCreate, async (message) => {
   const mentions = [...message.mentions.users.values()]
     .filter((u) => u.id !== client.user.id)
     .map((u) => ({ id: u.id, name: message.mentions.members?.get(u.id)?.displayName ?? u.displayName }));
-  const item = { message, content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions };
-  if (!hasText(message.content)) {
+  const item = { message, content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions, images: [] };
+  // "@bot" + imagem anexada, ou "@bot" como reply (a citada pode ter imagem),
+  // segue mesmo sem texto: a imagem é analisada (só whitelist, só com menção).
+  const mayHaveImage = mentionsBot && isTarget && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
+  if (!hasText(message.content) && !mayHaveImage) {
     logger.info(`ignorada: sem texto (${message.attachments.size} anexo(s), ${message.embeds.length} embed(s))`);
     return;
   }
 
-  // Entra no lote já (preserva a ordem de chegada); a referência é resolvida
-  // em paralelo e aguardada antes de montar o texto.
-  item.ready = resolveReference(message, item);
+  // Entra no lote já (preserva a ordem de chegada); a referência e as imagens
+  // são resolvidas em paralelo e aguardadas antes de montar o texto.
+  item.ready = resolveReference(message, item)
+    .then((reference) => attachImages(item, reference, { isTarget, where, who }))
+    .catch((err) => logger.warn({ canal: where, autor: who }, `análise de imagens falhou (${err.message}); seguindo sem imagens`));
   const key = `${message.channelId}:${message.author.id}`;
   // Autor mandou mensagem nova com o lote dele na fila ou buscando contexto: cancela e o
   // lote antigo volta para a espera junto com a nova, para uma resposta só.
@@ -240,15 +252,56 @@ client.on(Events.MessageCreate, async (message) => {
   logger.info(`esperando ${config.batchDelayMs / 1000}s sem novas mensagens para fechar o lote (${size} na espera)`);
 });
 
+// Devolve a mensagem citada (ou null), para a análise de imagens dela.
 async function resolveReference(message, item) {
-  if (!message.reference?.messageId) return;
+  if (!message.reference?.messageId) return null;
   try {
     const ref = await message.fetchReference();
     if (ref.author.id === client.user.id) item.replyToBot = true;
     else item.quoted = { author: displayName(ref), content: (ref.cleanContent ?? '').slice(0, 300) };
+    return ref;
   } catch (err) {
     logger.warn(`mensagem referenciada inacessível (${err.message}); seguindo sem citação`);
+    return null;
   }
+}
+
+// Imagens da mensagem (anexos, links) e da citada: baixa, descreve pelo CLI em
+// modo vision e guarda em item.images (src/images.js). Só com menção explícita
+// ao bot e autor na whitelist. Roda enquanto o lote espera; erro em uma imagem
+// vira um bloco "não foi possível analisar", e o lote segue.
+async function attachImages(item, reference, { isTarget, where, who }) {
+  const { message } = item;
+  if (config.images.max <= 0) return;
+  const { images, rejected } = collectImages({ message, reference, mentionsBot: item.mentionsBot, isTarget, limits: config.images });
+  for (const r of rejected) logger.info({ canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
+  if (images.length === 0) return;
+  const hint = stripBotMention(item.content, message);
+  for (const i of images) logger.info({ canal: where, autor: who, dica: hint || undefined }, `imagem recebida: ${i.name} (${i.size != null ? `${(i.size / 1e6).toFixed(1)} MB, ` : ''}${i.source}) → analisando`);
+  message.channel.sendTyping().catch(() => { });
+  // mesmo contexto que a geração recebe (10 do canal + 5 do autor + 5 do bot),
+  // para o analisador saber do que estão falando
+  const { full: context } = await fetchContext([item]);
+  item.images = await analyzeImages(images, {
+    dir: config.imagesDir,
+    fileBase: message.id,
+    hint,
+    context,
+    backend,
+    config,
+    onResult: (r, seconds) => {
+      if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
+      else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length }, `imagem descrita: ${preview(r.description)}`);
+    },
+  });
+}
+
+// Texto da mensagem sem o "@bot" (cleanContent mostra menções como @Nome).
+function stripBotMention(cleanContent, message) {
+  const names = [client.user.username, message.guild?.members.me?.displayName].filter(Boolean);
+  let text = cleanContent ?? '';
+  for (const name of names) text = text.split(`@${name}`).join(' ');
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 client.on(Events.Error, (err) => logger.error({ err }, 'erro do cliente Discord'));
@@ -302,6 +355,7 @@ async function processBatch(items, run) {
       context: fullContext,
       now: last.createdTimestamp,
       botId: client.user.id,
+      names: [client.user.username, last.guild?.members.me?.displayName, 'bot'],
       dictionary,
       config: config.judge,
     });

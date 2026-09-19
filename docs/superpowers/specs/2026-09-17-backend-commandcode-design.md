@@ -1,5 +1,7 @@
 # Backend alternativo: Command Code no lugar do Claude Code
 
+> Nota (2026-09-17, depois): o juiz por modelo descrito abaixo (`kind: 'judge'`, `buildJudgeArgs`, `JUDGE` por backend) foi substituído pelo juiz heurístico local (ver `2026-09-17-juiz-heuristico-design.md`); `buildRequest` não tem mais `kind`.
+
 ## Objetivo
 
 Escolher, ao iniciar o bot, qual CLI gera as respostas: `claude` (Claude Code, como hoje) ou `command-code` (Command Code, já instalado e logado na máquina: `command-code@1.55.0`, `command-code status` → autenticado). O resto do bot (Discord, lotes, fila, sessões, juiz, contexto) não muda.

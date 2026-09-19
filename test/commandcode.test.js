@@ -188,3 +188,13 @@ test('run: sessão inexistente rejeita com a mensagem do CLI (stderr) e isSessio
     delete process.env.FAKE_NO_SESSION;
   }
 });
+
+test('buildRequest vision: só read_file (+search_tools), sem skills, sem yolo, teto de turnos, sem resume', () => {
+  const { args } = cc.buildRequest({ mode: 'vision', prompt: 'x', sessionId: 'abc' });
+  assert.equal(modOption(args, 'tools'), 'read_file,search_tools');
+  assert.ok(args.includes('--no-skills'));
+  assert.ok(!args.includes('--yolo'));
+  assert.equal(flagValue(args, '--max-turns'), '4');
+  assert.ok(!args.includes('--resume'));
+  assert.match(modOption(args, 'systemPrompt'), /descreve imagens/i);
+});

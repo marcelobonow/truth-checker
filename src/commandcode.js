@@ -29,12 +29,15 @@ export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, eff
   if (mode === 'web') {
     args.push('--mod-option', `tools=${WEB_TOOLS}`, '--no-skills');
     if (maxTurns) args.push('--max-turns', String(maxTurns));
+  } else if (mode === 'vision') {
+    // Descrição de imagem: só read_file (limitado ao workspace = pasta da imagem), sem sessão
+    args.push('--mod-option', 'tools=read_file,search_tools', '--no-skills', '--max-turns', '4');
   } else {
     args.push('--mod-option', 'tools=*', '--yolo');
   }
   if (model) args.push('-m', model);
   if (effort) args.push('--effort', effort);
-  if (sessionId) args.push('--resume', sessionId);
+  if (sessionId && mode !== 'vision') args.push('--resume', sessionId);
   return { args, prompt };
 }
 

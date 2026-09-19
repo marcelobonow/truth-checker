@@ -257,3 +257,14 @@ test('backend claude: isSessionMissing reconhece a mensagem do CLI; webDir é a 
   assert.equal(claude.supportsUsage, true);
   assert.equal(claude.run, runClaude);
 });
+
+test('modo vision: só Read, sem MCP/skills, teto de turnos, sem resume nem bypass', () => {
+  const args = buildArgs({ mode: 'vision', sessionId: 'abc', workDir: 'C:\bot\imagens' });
+  assert.equal(flagValue(args, '--tools'), 'Read');
+  assert.ok(!args.includes('--allowedTools'));
+  assert.ok(args.includes('--strict-mcp-config') && args.includes('--disable-slash-commands'));
+  assert.equal(flagValue(args, '--max-turns'), '3');
+  assert.ok(!args.includes('--resume'));
+  assert.ok(!args.includes('--dangerously-skip-permissions'));
+  assert.match(flagValue(args, '--append-system-prompt'), /descreve imagens/i);
+});

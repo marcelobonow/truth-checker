@@ -17,9 +17,12 @@ export function buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort
     if (maxTurns) args.push('--max-turns', String(maxTurns));
   }
   if (mode === 'full') args.push('--dangerously-skip-permissions');
+  // Descrição de imagem: só Read (o cwd é a pasta da imagem, e Read fora dele
+  // é negado em -p), sem sessão; ler + responder cabe em poucos turnos.
+  if (mode === 'vision') args.push('--tools', 'Read', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '3');
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
-  if (sessionId) args.push('--resume', sessionId);
+  if (sessionId && mode !== 'vision') args.push('--resume', sessionId);
   return args;
 }
 

@@ -42,6 +42,18 @@ export const CONTEXT = {
   author: 5,
 };
 
+// Análise de imagem (docs/superpowers/specs/2026-09-18-analise-imagem-design.md):
+// só quando alguém da whitelist marca o bot explicitamente, com imagem anexada,
+// linkada ou na mensagem citada (reply). Cada imagem é descrita numa chamada
+// separada do CLI (modelo: MODEL.vision em settings.<backend>.js) e a descrição
+// entra no prompt no lugar da imagem. max = 0 desliga.
+export const IMAGES = {
+  max: 2, // imagens por mensagem (anexos + links + citada); as demais são ignoradas com log
+  maxBytes: 8_000_000,
+  maxChars: 12_000, // corte da descrição (o prompt de visão mira em ~10000 chars)
+  timeoutMs: 90_000, // por imagem
+};
+
 // Reinício automático da sessão do Claude (o contexto não cresce sem limite):
 // começa uma sessão nova quando o total de mensagens já enviadas a ela (lote +
 // contexto) passar de `maxMessages`, quando o contexto da última rodada passar
