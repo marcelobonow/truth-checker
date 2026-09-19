@@ -645,7 +645,7 @@ nairu
 taxa natural de desemprego
 desemprego natural
 pleno emprego
-desemprego = 2
+desemprego
 desempregado*
 taxa de desemprego
 emprego
@@ -664,7 +664,7 @@ custo brasil
 salario minimo = 2
 salario-minimo
 piso salarial
-salario = 2
+salario
 salarios
 salario real
 poder de compra
@@ -731,7 +731,7 @@ confisco da poupanca
 urv
 indexacao
 correcao monetaria
-juros = 2
+juros
 juro
 taxa de juros
 taxa basica
@@ -748,7 +748,7 @@ financiamento
 financiamentos
 endividamento
 endividado
-divida = 2
+divida
 dividas
 divida publica = 2
 divida do governo
@@ -775,7 +775,7 @@ equilibrio fiscal
 ajuste fiscal
 austeridade
 austeridade fiscal
-orcamento = 2
+orcamento
 orcamento publico
 orcamentaria
 orcamentario
@@ -906,14 +906,14 @@ desigualdade economica
 gini
 indice de gini
 coeficiente de gini
-pobreza = 2
+pobreza
 pobre
 pobres
 extrema pobreza
 miseria
 miseravel
 linha da pobreza
-riqueza = 2
+riqueza
 rico
 ricos
 enriquecimento
@@ -1010,12 +1010,12 @@ social democracia
 social-democracia
 socialdemocracia
 socialdemocrata
-mercado = 2
+mercado
 mercados
 economia de mercado
 sistema de precos
 mecanismo de precos
-precos = 2
+precos
 preco
 preco de mercado
 preco justo
@@ -1041,7 +1041,7 @@ falta de produtos
 prateleiras vazias
 racionamento
 racionar
-lucro = 2
+lucro
 lucros
 lucrar
 lucratividade
@@ -1051,7 +1051,7 @@ lucro excessivo
 lucro exorbitante
 ganancia
 ganancioso
-capital = 2
+capital
 capitalista = 2
 capitalistas
 capitalismo = 2
@@ -1059,12 +1059,12 @@ sistema capitalista
 modo de producao capitalista
 acumulacao de capital
 acumulacao primitiva
-investimento = 2
+investimento
 investimentos
 investir
 investidor
 investidores
-poupanca = 2
+poupanca
 poupar
 poupador
 poupadores
@@ -1076,7 +1076,7 @@ consumista
 consumidor
 consumidores
 demanda do consumidor
-producao = 2
+producao
 produtor
 produtores
 produzir
@@ -1089,9 +1089,9 @@ patrao
 patroes
 empregador
 empregado
-empresa = 2
+empresa
 empresas
-empresario = 2
+empresario
 empresarios
 empreendedorismo
 empreendedor
@@ -1122,7 +1122,7 @@ ambiente de negocios
 inseguranca juridica
 seguranca juridica
 respeito aos contratos
-contratos = 2
+contratos
 contrato
 quebra de contrato
 inadimplencia
@@ -1130,7 +1130,7 @@ calote
 falencia
 falir
 recuperacao judicial
-comercio = 2
+comercio
 comercial
 comerciante
 importacao
@@ -1143,22 +1143,22 @@ balanca comercial
 balanco de pagamentos
 deficit comercial
 superavit comercial
-cambio = 2
+cambio
 taxa de cambio
 cambio flutuante
 cambio fixo
 desvalorizacao
 desvalorizar
 valorizacao cambial
-dolar = 2
+dolar
 dolares
 cotacao do dolar
 dolar alto
 dolar subindo
 euro
-moeda = 2
+moeda
 moedas
-dinheiro = 2
+dinheiro
 papel moeda
 papel-moeda
 cedula
@@ -1381,7 +1381,7 @@ pedaladas
 contabilidade criativa
 lula = 2
 governo lula
-pt = 2
+pt
 governo do pt
 petista
 bolsonaro = 2
@@ -1507,13 +1507,13 @@ politiqueiro
 partid*
 partido politico
 partidos politicos
-eleicao = 2
+eleicao
 eleicoes
 eleitoral
 eleitor
 eleitores
 eleitorado
-voto = 2
+voto
 votos
 votar
 votacao
@@ -1527,7 +1527,7 @@ tre
 justica eleitoral
 campanha eleitoral
 campanha
-candidato = 2
+candidato
 candidatos
 candidatura
 candidatar
@@ -1585,7 +1585,7 @@ apadrinhado
 apadrinhamento
 indicacao politica
 indicacao politica
-governo = 2
+governo
 governos
 governar
 governante
@@ -1625,7 +1625,7 @@ separacao de poderes
 harmonia entre os poderes
 freios e contrapesos
 checks and balances
-presidente = 2
+presidente
 presidencia
 presidencial
 presidencialismo
@@ -1748,7 +1748,7 @@ casta politica
 classe politica
 regalias
 mordomias
-estado = 2
+estado
 estatismo = 2
 estatista = 2
 estatistas
@@ -1843,7 +1843,7 @@ politizacao da justica
 legislar
 legislador
 legislacao
-lei = 2
+lei
 leis
 projeto de lei
 pl
@@ -2131,7 +2131,7 @@ militares
 general
 generais
 comandante
-guerra = 2
+guerra
 guerras
 guerra civil
 guerra mundial
@@ -2266,8 +2266,8 @@ privatizacao da eletrobras
 tv publica
 ebc
 tv brasil
-midia = 2
-imprensa = 2
+midia
+imprensa
 jornalismo
 jornalista
 jornalistas
@@ -2306,7 +2306,7 @@ fact-checking
 agencia lupa
 aos fatos
 comprova
-redes sociais = 2
+redes sociais
 twitter
 facebook
 instagram
@@ -2404,7 +2404,7 @@ economia solidaria
 individualismo = 2
 individualista = 2
 individualistas
-individuo = 2
+individuo
 individuos
 liberdade individual = 2
 liberdades individuais
@@ -2429,7 +2429,7 @@ rule of law
 imperio da lei
 governo das leis
 seguranca juridica
-liberdade = 2
+liberdade
 liberdades
 libertacao
 libertar
@@ -2536,7 +2536,7 @@ intelectual
 intelligentsia
 academia
 academico
-universidade = 2
+universidade
 universidades
 professor
 professores
@@ -2556,7 +2556,7 @@ antropologo
 filosofia politica = 2
 filosofo
 filosofos
-filosofia = 2
+filosofia
 filosofico
 filosofica
 epistemologia
@@ -2575,7 +2575,7 @@ catolico = 2
 catolica = 2
 catolicos
 catolicas
-igreja = 2
+igreja
 igrejas
 igreja catolica = 2
 santa igreja
@@ -2589,7 +2589,7 @@ santa sé
 se apostolica
 curia
 curia romana
-papa = 2
+papa
 papas
 papado
 pontifice
@@ -2616,7 +2616,7 @@ leao xiv = 2
 leao 14
 leao xiii = 2
 leao 13
-francisco = 2
+francisco
 papa francisco
 bergoglio
 bento xvi = 2
@@ -2646,7 +2646,7 @@ leao magno
 gregorio magno
 sao gregorio
 sao pedro = 2
-sao paulo = 2
+sao paulo
 apostolo paulo
 paulo apostolo
 apostol*
@@ -2681,7 +2681,7 @@ arquidiocese
 cnbb = 2
 conferencia episcopal
 conferencia dos bispos
-padre = 2
+padre
 padres
 sacerdote = 2
 sacerdotes
@@ -2812,12 +2812,12 @@ virtude* = 2
 virtudes cardeais
 virtudes teologais
 prudencia
-justica = 2
+justica
 fortaleza
 temperanca
-fe = 2
-esperanca = 2
-caridade = 2
+fe
+esperanca
+caridade
 fe esperanca e caridade
 vicio
 vicios
@@ -2841,14 +2841,14 @@ preguica
 acidia
 acedia
 vangloria
-humildade = 2
+humildade
 humilde
 mansidao
 paciencia
 paciente
-misericordia = 2
+misericordia
 misericordioso
-perdao = 2
+perdao
 perdoar
 arrependimento
 arrepender
@@ -2868,7 +2868,7 @@ quinta feira santa
 sexta feira santa
 sabado santo
 vigilia pascal
-pascoa = 2
+pascoa
 pascoa da ressurreicao
 ressurreicao = 2
 ressuscitou
@@ -2886,7 +2886,7 @@ carismatico
 renovacao carismatica
 rcc
 advento = 2
-natal = 2
+natal
 nascimento de jesus
 encarnacao = 2
 verbo encarnado
@@ -2923,11 +2923,11 @@ montfort
 luis de montfort
 sao luis maria
 tratado da verdadeira devocao
-aparecida = 2
+aparecida
 nossa senhora aparecida
 padroeira
 padroeira do brasil
-fatima = 2
+fatima
 nossa senhora de fatima
 segredo de fatima
 tres pastorinhos
@@ -2959,7 +2959,7 @@ angelus
 angelus domini
 regina caeli
 magnificat
-santo = 2
+santo
 santidade
 santificacao
 santificar
@@ -3010,7 +3010,7 @@ sao gabriel
 sao rafael
 arcanjo
 arcanjos
-anjo = 2
+anjo
 anjos
 anjo da guarda
 angelico
@@ -3049,7 +3049,7 @@ almas do purgatorio
 indulgencia
 indulgencias
 indulgencia plenaria
-ceu = 2
+ceu
 paraiso
 reino dos ceus
 reino de deus
@@ -3087,15 +3087,15 @@ plano de deus
 desígnio
 designio
 designios
-deus = 2
+deus
 deuses
 divino
 divina
 divindade
 nosso senhor = 2
-jesus = 2
+jesus
 jesus cristo = 2
-cristo = 2
+cristo
 cristo jesus
 cristologia
 messias
@@ -3558,7 +3558,7 @@ ordenado
 imposicao das maos
 matrimonio = 2
 sacramento do matrimonio
-casamento = 2
+casamento
 casamento na igreja
 casamento religioso
 casar na igreja
@@ -3670,7 +3670,7 @@ cultura da morte = 2
 cultura de morte
 cultura da vida
 evangelho da vida
-familia = 2
+familia
 familias
 familiar
 familia natural
@@ -4094,7 +4094,7 @@ mormons
 mórmon
 crente
 crentes
-pastor = 2
+pastor
 pastores
 pastora
 bancada evangelica
@@ -4107,7 +4107,7 @@ so a escritura
 apenas a biblia
 livre exame
 livre interpretacao
-biblia = 2
+biblia
 biblico
 biblica
 sagrada escritura = 2
@@ -4222,7 +4222,7 @@ inerrancia
 inspiracao
 inspirado
 divinamente inspirado
-revelacao = 2
+revelacao
 revelacao divina
 revelacao publica
 revelacao privada
@@ -4313,7 +4313,7 @@ ad gentes
 mandato missionario
 ide e fazei discipulos
 grande comissao
-conversao = 2
+conversao
 converter
 convertido
 convertida
@@ -4585,9 +4585,9 @@ sao joao apostolo
 pequenas comunidades
 grupo de oracao
 grupos de oracao
-oracao = 2
+oracao
 oracoes
-rezar = 2
+rezar
 reza
 rezando
 orar
@@ -4770,7 +4770,7 @@ preceito
 preceito dominical
 missa dominical
 missa aos domingos
-domingo = 2
+domingo
 domingos
 dia do senhor
 descanso dominical
@@ -4798,7 +4798,7 @@ dia de nossa senhora
 `;
 
 const MORALIDADE = `
-moral = 2
+moral
 morais
 moralidade = 2
 moralismo
@@ -4808,7 +4808,7 @@ imoral
 imoralidade
 amoral
 amoralidade
-etica = 2
+etica
 etico
 eticos
 antietico
@@ -4890,7 +4890,7 @@ a virtude do egoismo
 autointeresse
 interesse proprio
 interesse pessoal
-consciencia = 2
+consciencia
 consciencia moral
 voz da consciencia
 peso na consciencia
@@ -4901,12 +4901,12 @@ culpabilidade
 sentimento de culpa
 remorso
 vergonha
-honra = 2
+honra
 honrado
 honroso
 desonra
 desonrado
-dignidade = 2
+dignidade
 indigno
 indignidade
 integridade
@@ -4916,10 +4916,10 @@ honesto
 honesta
 desonestidade
 desonesto
-mentira = 2
+mentira
 mentiroso
 mentirosos
-verdade = 2
+verdade
 verdadeiro
 verdadeira
 veracidade
@@ -4930,7 +4930,7 @@ enganacao
 fraude
 fraudar
 fraudulento
-roubo = 2
+roubo
 roubar
 ladrao
 ladroes
@@ -4963,7 +4963,7 @@ dizimista
 ofertas
 esmola
 esmolas
-caridade = 2
+caridade
 caritativo
 caritas
 obras de caridade
@@ -5049,7 +5049,7 @@ etiqueta
 educacao
 bem educado
 mal educado
-respeito = 2
+respeito
 respeitar
 respeitoso
 desrespeito
@@ -5069,7 +5069,7 @@ brutalidade
 crueldade
 sadismo
 sadico
-violencia = 2
+violencia
 violento
 nao violencia
 pacifismo
@@ -5088,7 +5088,7 @@ porte de arma
 porte de armas
 posse de arma
 posse de armas
-armas = 2
+armas
 arma
 armamento
 armamentismo
@@ -5113,7 +5113,7 @@ bandidos
 bandidagem
 criminoso
 criminosos
-crime = 2
+crime
 crimes
 criminalidade
 violencia urbana
@@ -5135,7 +5135,7 @@ comando vermelho
 milicia
 milicias
 miliciano
-policia = 2
+policia
 policial
 policiais
 policia militar
@@ -5151,7 +5151,7 @@ punicao
 punir
 punitivismo
 punitivista
-prisao = 2
+prisao
 prisoes
 presidiario
 presidiarios
@@ -5176,7 +5176,7 @@ reducao da maioridade
 menor infrator
 menores infratores
 estatuto da crianca
-drogas = 2
+drogas
 maconha = 2
 cannabis
 legalizacao da maconha
@@ -5247,7 +5247,7 @@ deslealdade
 confianca
 confiavel
 desconfianca
-amizade = 2
+amizade
 verdadeira amizade
 inimigo
 inimigos
@@ -5353,7 +5353,7 @@ meritorio
 esforco
 esforcado
 trabalho duro
-disciplina = 2
+disciplina
 disciplinado
 indisciplina
 autodisciplina
@@ -5382,7 +5382,7 @@ prazeres
 busca do prazer
 gratificacao instantanea
 gratificacao adiada
-sacrificio = 2
+sacrificio
 sacrificios
 sacrificar
 abnegacao
@@ -5393,7 +5393,7 @@ ascese
 ascetismo
 ascetico
 asceta
-sofrimento = 2
+sofrimento
 cruz de cada dia
 carregar a cruz
 oferecer o sofrimento
@@ -5431,7 +5431,7 @@ lagosta
 mortalidade
 imortal
 imortalidade
-alma = 2
+alma
 almas
 alma imortal
 imortalidade da alma
@@ -5541,7 +5541,7 @@ autodeterminacao
 liberdade absoluta
 liberdade sem limites
 liberdade e responsabilidade
-responsabilidade = 2
+responsabilidade
 responsavel
 irresponsavel
 irresponsabilidade
@@ -5690,7 +5690,7 @@ assimilacao
 integracao
 multiculturalismo = 2
 multicultural
-diversidade = 2
+diversidade
 diverso
 inclusao
 inclusivo
@@ -5942,7 +5942,7 @@ liberdade religiosa = 2
 liberdade de culto
 liberdade de crenca
 perseguicao religiosa
-religiao = 2
+religiao
 religioes
 religioso
 religiosa
@@ -5989,7 +5989,7 @@ criacao
 criador
 criatura
 criaturas
-evolucao = 2
+evolucao
 evolucionismo
 darwin
 darwinismo
