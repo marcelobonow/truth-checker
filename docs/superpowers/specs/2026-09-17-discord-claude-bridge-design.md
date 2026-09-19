@@ -55,9 +55,10 @@ Quem não está na whitelist usa sempre `web`. Ambos usam
 `src/settings.js`; web usa esforço `low` por padrão). O modo web não carrega
 skills nem servidores MCP da configuração global (menos tokens por chamada e
 nada da máquina exposto a quem só menciona o bot).
-Sessões (`--resume`) persistidas em `sessions.json`: chave `<guildId>`,
-compartilhada pelos usuários da whitelist (o cabeçalho identifica o autor), e
-`<guildId>:public` para as demais pessoas. Cada entrada guarda `{ id,
+Sessões (`--resume`) persistidas em `sessions.json`: chave `<guildId>` (modo
+full) ou `<guildId>:web`, compartilhada pelos usuários da whitelist e dos
+cargos (o cabeçalho identifica o autor), e `<guildId>:public` para as demais
+pessoas. Cada entrada guarda `{ id,
 messages, lastUsed }`; `messages` acumula tudo que já foi enviado ao Claude
 naquela sessão (mensagens do lote + do contexto).
 

@@ -4,16 +4,25 @@ import { formatImage } from './images.js';
 
 // Regras de roteamento (ver docs/superpowers/specs, §2 e §3).
 
-export function resolveMode({ guildId, isTarget }, config) {
-  return isTarget && config.fullAccessGuildIds.includes(guildId) ? 'full' : 'web';
+// Modo full: só ids de TARGET_USER_IDS (cargo não basta) em servidor de
+// FULL_ACCESS_GUILD_IDS. Todo o resto é web.
+export function resolveMode({ guildId, authorId }, config) {
+  return config.targetUserIds.includes(authorId) && config.fullAccessGuildIds.includes(guildId) ? 'full' : 'web';
+}
+
+// Atendido pelo bot: id na whitelist (TARGET_USER_IDS) ou algum cargo em
+// TARGET_ROLE_IDS. `roleIds`: cargos do autor no servidor (vazio em DM).
+export function isTarget({ authorId, roleIds = [] }, config) {
+  return config.targetUserIds.includes(authorId) || roleIds.some((id) => config.targetRoleIds.includes(id));
 }
 
 // Por que a mensagem não será analisada (texto para o log), ou null se for.
-export function skipReason({ authorId, isBot, guildId, channelId, mentionsBot }, config) {
+export function skipReason(meta, config) {
+  const { isBot, guildId, channelId, mentionsBot } = meta;
   if (isBot) return 'autor é bot';
   if (!guildId) return 'fora de servidor (DM)';
   if (config.watchChannelIds.length > 0 && !config.watchChannelIds.includes(channelId)) return 'canal fora de WATCH_CHANNEL_IDS';
-  if (config.targetUserIds.includes(authorId)) return null;
+  if (isTarget(meta, config)) return null;
   if (!mentionsBot) return 'usuário fora da whitelist e sem menção ao bot';
   return config.mentionAnyone ? null : 'usuário fora da whitelist (MENTION_ANYONE desligado)';
 }
@@ -40,8 +49,11 @@ export function mentionsByName(rawContent, names) {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-export function sessionKey({ guildId, isTarget }) {
-  return isTarget ? guildId : `${guildId}:public`;
+// Sessão por servidor e modo: '<guild>' (full) e '<guild>:web' para whitelist
+// e cargos; '<guild>:public' para quem só menciona o bot (MENTION_ANYONE).
+export function sessionKey({ guildId, isTarget, mode }) {
+  if (!isTarget) return `${guildId}:public`;
+  return mode === 'full' ? guildId : `${guildId}:web`;
 }
 
 // Resposta do "/status": tamanho da sessão atual (mensagens/limite) e
@@ -103,13 +115,14 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   }
   // o que é do autor: descrições das imagens (src/images.js) no lugar delas, antes do texto
   const own = items.map((item) => [...(item.images ?? []).map(formatImage), item.content].filter(Boolean).join(' '));
-  const lines = items.map((item, i) => {
-    const who = emphasizeQuote ? `${item.quoted?.author}, não a você` : item.quoted?.author;
-    let quote = item.quoted ? `(em resposta a ${who}: "${item.quoted.content}") ` : '';
-    // reply ao bot: a mensagem dele pode ser antiga ou de uma sessão anterior
-    if (item.botQuote) quote = `(em resposta à sua mensagem: "${item.botQuote}") `;
-    return quote + own[i];
-  });
+  // citação: do próprio bot (pode ser antiga ou de outra sessão) ou de outra pessoa
+  const quoteOf = (item) => {
+    if (!item.quoted) return '';
+    if (item.replyToBot) return `(em resposta à sua mensagem: "${item.quoted.content}") `;
+    const who = emphasizeQuote ? `${item.quoted.author}, não a você` : item.quoted.author;
+    return `(em resposta a ${who}: "${item.quoted.content}") `;
+  };
+  const lines = items.map((item, i) => quoteOf(item) + own[i]);
   const body = lines.length === 1 ? lines[0] : lines.map((line, i) => `${i + 1}. ${line}`).join('\n');
   // Lembrete no fim: a sessão é compartilhada e o lote espera alguns segundos,
   // então há mensagens de outras pessoas antes e depois; deixa explícito a

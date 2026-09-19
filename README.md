@@ -7,7 +7,7 @@ já feito nesta máquina (sem API key). Design completo em
 
 ## Comportamento
 
-- Só mensagens dos usuários em `TARGET_USER_IDS` ([src/users.js](src/users.example.js), ignorado pelo git), em servidores (DMs e bots ignorados).
+- Só mensagens dos usuários em `TARGET_USER_IDS` ([src/users.js](src/users.example.js), ignorado pelo git) ou com um cargo de `TARGET_ROLE_IDS` (`src/settings.js`; sempre modo web), em servidores (DMs e bots ignorados). O cargo vale na hora: dá para liberar alguém sem reiniciar o bot.
 - Servidores em `FULL_ACCESS_GUILD_IDS` (`src/settings.js`): Claude com **todas as ferramentas e
   sem pedir permissão** (programação remota no `WORK_DIR`). Qualquer outro
   servidor: só conversa + WebSearch/WebFetch.

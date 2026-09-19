@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveMode, shouldHandle, sessionKey, buildUserMessage, isNoReply, askClaude, formatStatus } from '../src/bridge.js';
+import { resolveMode, isTarget, shouldHandle, sessionKey, buildUserMessage, isNoReply, askClaude, formatStatus } from '../src/bridge.js';
 
 const config = {
   targetUserIds: ['u1', 'u3'],
+  targetRoleIds: ['r-vip'],
   fullAccessGuildIds: ['g-full'],
   watchChannelIds: [],
   mentionAnyone: true,
@@ -14,10 +15,10 @@ const config = {
   extraPrompt: { web: 'Premissa: X.', full: 'Programação.' },
 };
 
-test('resolveMode: usuário-alvo em guild whitelisted é full; fora dela, web; outras pessoas sempre web', () => {
-  assert.equal(resolveMode({ guildId: 'g-full', isTarget: true }, config), 'full');
-  assert.equal(resolveMode({ guildId: 'g-other', isTarget: true }, config), 'web');
-  assert.equal(resolveMode({ guildId: 'g-full', isTarget: false }, config), 'web');
+test('resolveMode: id da whitelist em guild full é full; fora dela, cargo ou outras pessoas, web', () => {
+  assert.equal(resolveMode({ guildId: 'g-full', authorId: 'u1' }, config), 'full');
+  assert.equal(resolveMode({ guildId: 'g-other', authorId: 'u1' }, config), 'web');
+  assert.equal(resolveMode({ guildId: 'g-full', authorId: 'u2' }, config), 'web');
 });
 
 test('shouldHandle: usuário-alvo em servidor, sem ser bot', () => {
@@ -34,15 +35,28 @@ test('shouldHandle: outra pessoa só quando menciona o bot e MENTION_ANYONE est�
   assert.equal(shouldHandle({ ...other, mentionsBot: true }, { ...config, mentionAnyone: false }), false);
 });
 
+test('isTarget: whitelist de usuário OU cargo em TARGET_ROLE_IDS', () => {
+  assert.equal(isTarget({ authorId: 'u1', roleIds: [] }, config), true);
+  assert.equal(isTarget({ authorId: 'u2', roleIds: ['r-x', 'r-vip'] }, config), true);
+  assert.equal(isTarget({ authorId: 'u2', roleIds: ['r-x'] }, config), false);
+  assert.equal(isTarget({ authorId: 'u2' }, config), false);
+});
+
+test('shouldHandle: quem tem o cargo é tratado como whitelist (sem precisar mencionar)', () => {
+  const member = { authorId: 'u2', roleIds: ['r-vip'], isBot: false, guildId: 'g', channelId: 'c', mentionsBot: false };
+  assert.equal(shouldHandle(member, { ...config, mentionAnyone: false }), true);
+});
+
 test('shouldHandle: WATCH_CHANNEL_IDS restringe os canais', () => {
   const msg = { authorId: 'u1', isBot: false, guildId: 'g', channelId: 'c2', mentionsBot: false };
   assert.equal(shouldHandle(msg, { ...config, watchChannelIds: ['c1'] }), false);
   assert.equal(shouldHandle(msg, { ...config, watchChannelIds: ['c1', 'c2'] }), true);
 });
 
-test('sessionKey: guild para o usuário-alvo, guild:public para os demais', () => {
-  assert.equal(sessionKey({ guildId: 'g', isTarget: true }), 'g');
-  assert.equal(sessionKey({ guildId: 'g', isTarget: false }), 'g:public');
+test('sessionKey: guild (full) ou guild:web para whitelist/cargo, guild:public para os demais', () => {
+  assert.equal(sessionKey({ guildId: 'g', isTarget: true, mode: 'full' }), 'g');
+  assert.equal(sessionKey({ guildId: 'g', isTarget: true, mode: 'web' }), 'g:web');
+  assert.equal(sessionKey({ guildId: 'g', isTarget: false, mode: 'web' }), 'g:public');
 });
 
 test('buildUserMessage: uma mensagem, julgamento', () => {
@@ -83,7 +97,7 @@ test('buildUserMessage: emphasizeQuote repete na citação que o reply não é a
 test('buildUserMessage: reply ao bot traz a mensagem dele citada como "sua mensagem"', () => {
   const text = buildUserMessage({
     guildName: 'S', channelName: 'c', authorName: 'a',
-    items: [{ content: 'tem certeza?', replyToBot: true, mentionsBot: false, quoted: null, botQuote: 'Mises nasceu em 1881.' }],
+    items: [{ content: 'tem certeza?', replyToBot: true, mentionsBot: false, quoted: { author: 'Bot', content: 'Mises nasceu em 1881.' } }],
   });
   assert.match(text, /^\(em resposta à sua mensagem: "Mises nasceu em 1881\."\) tem certeza\?$/m);
   assert.match(text, /a última: "tem certeza\?"/);

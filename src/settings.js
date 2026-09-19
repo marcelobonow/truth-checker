@@ -6,6 +6,14 @@
 // não expor os ids de quem participa). Modelo: src/users.example.js.
 export { TARGET_USER_IDS } from './users.js';
 
+// Cargos que valem como whitelist: quem tem um deles é atendido como se
+// estivesse em TARGET_USER_IDS (sem menção, /reset, /status), mas sempre em
+// modo web: o full é só para os ids acima. Dá para liberar alguém só dando o
+// cargo, sem reiniciar o bot.
+export const TARGET_ROLE_IDS = [
+  "1550716105775910932"
+];
+
 // Servidores onde os usuários acima têm acesso total à máquina (modo full).
 // Qualquer outro servidor fica só com conversa + busca na web.
 export const FULL_ACCESS_GUILD_IDS = [

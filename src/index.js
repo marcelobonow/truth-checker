@@ -6,14 +6,14 @@ import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
 import { createInflight } from './inflight.js';
 import { splitMessage } from './split.js';
-import { resolveMode, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, selectContext, parseDirective, formatStatus, sessionResetReason, hasText, mentionsByName } from './bridge.js';
+import { resolveMode, isTarget, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, selectContext, parseDirective, formatStatus, sessionResetReason, hasText, mentionsByName } from './bridge.js';
 import { selectBackend } from './backend.js';
 import { judge, compileDictionary } from './heuristic.js';
 import { parseDictionary } from './dicionario.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { logger } from './logger.js';
-import { BACKEND, TARGET_USER_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -55,6 +55,7 @@ const dictionary = compileDictionary(parseDictionary());
 
 const config = {
   targetUserIds: TARGET_USER_IDS.map(String),
+  targetRoleIds: TARGET_ROLE_IDS.map(String),
   fullAccessGuildIds: FULL_ACCESS_GUILD_IDS.map(String),
   watchChannelIds: list(env.WATCH_CHANNEL_IDS),
   mentionAnyone: Boolean(MENTION_ANYONE),
@@ -127,6 +128,7 @@ client.once(Events.ClientReady, async (c) => {
     backend: backend.name,
     bin: config.bin,
     usuarios: config.targetUserIds,
+    cargos: config.targetRoleIds,
     acessoTotal: config.fullAccessGuildIds,
     canais: config.watchChannelIds.length ? config.watchChannelIds : 'todos',
     mencaoDeQualquerUm: config.mentionAnyone,
@@ -147,12 +149,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const ephemeral = { flags: MessageFlags.Ephemeral };
   const where = `${interaction.guild.name} #${interaction.channel?.name}`;
   const who = interaction.member?.displayName ?? interaction.user.displayName;
-  if (!config.targetUserIds.includes(interaction.user.id)) {
+  if (!isTarget({ authorId: interaction.user.id, roleIds: roleIds(interaction.member) }, config)) {
     logger.info({ canal: where, autor: who }, `/${interaction.commandName} recusado: fora da whitelist`);
     await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
     return;
   }
-  const key = sessionKey({ guildId: interaction.guildId, isTarget: true });
+  const mode = resolveMode({ guildId: interaction.guildId, authorId: interaction.user.id }, config);
+  const key = sessionKey({ guildId: interaction.guildId, isTarget: true, mode });
   logger.info({ canal: where, autor: who }, `/${interaction.commandName}`);
 
   if (interaction.commandName === 'status') {
@@ -196,12 +199,12 @@ client.on(Events.TypingStart, (typing) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  const isTarget = config.targetUserIds.includes(message.author.id);
   // menção real ou "@Nome" colado como texto
   const mentionsBot = message.mentions.users.has(client.user.id)
     || mentionsByName(message.content, [client.user.username, message.guild?.members.me?.displayName]);
   const meta = {
     authorId: message.author.id,
+    roleIds: roleIds(message.member),
     isBot: message.author.bot,
     guildId: message.guildId,
     channelId: message.channelId,
@@ -222,10 +225,11 @@ client.on(Events.MessageCreate, async (message) => {
   const mentions = [...message.mentions.users.values()]
     .filter((u) => u.id !== client.user.id)
     .map((u) => ({ id: u.id, name: message.mentions.members?.get(u.id)?.displayName ?? u.displayName }));
-  const item = { message, content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, botQuote: null, mentions, images: [] };
+  // whitelist (id ou cargo) decidida na chegada: vale para o lote inteiro
+  const item = { message, target: isTarget(meta, config), content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions, images: [] };
   // "@bot" + imagem anexada, ou "@bot" como reply (a citada pode ter imagem),
   // segue mesmo sem texto: a imagem é analisada (só whitelist, só com menção).
-  const mayHaveImage = mentionsBot && isTarget && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
+  const mayHaveImage = mentionsBot && item.target && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
   if (!hasText(message.content) && !mayHaveImage) {
     logger.info(`ignorada: sem texto (${message.attachments.size} anexo(s), ${message.embeds.length} embed(s))`);
     return;
@@ -234,7 +238,7 @@ client.on(Events.MessageCreate, async (message) => {
   // Entra no lote já (preserva a ordem de chegada); a referência e as imagens
   // são resolvidas em paralelo e aguardadas antes de montar o texto.
   item.ready = resolveReference(message, item)
-    .then((reference) => attachImages(item, reference, { isTarget, where, who }))
+    .then((reference) => attachImages(item, reference, { where, who }))
     .catch((err) => logger.warn({ canal: where, autor: who }, `análise de imagens falhou (${err.message}); seguindo sem imagens`));
   const key = `${message.channelId}:${message.author.id}`;
   // Autor mandou mensagem nova com o lote dele na fila ou buscando contexto: cancela e o
@@ -252,15 +256,14 @@ client.on(Events.MessageCreate, async (message) => {
   logger.info(`esperando ${config.batchDelayMs / 1000}s sem novas mensagens para fechar o lote (${size} na espera)`);
 });
 
-// Devolve a mensagem citada (ou null), para a análise de imagens dela.
+// Mensagem citada vira item.quoted (do bot ou de outra pessoa; replyToBot diz
+// qual) e é devolvida (ou null), para a análise de imagens dela.
 async function resolveReference(message, item) {
   if (!message.reference?.messageId) return null;
   try {
     const ref = await message.fetchReference();
-    if (ref.author.id === client.user.id) {
-      item.replyToBot = true;
-      item.botQuote = (ref.cleanContent ?? '').slice(0, 300);
-    } else item.quoted = { author: displayName(ref), content: (ref.cleanContent ?? '').slice(0, 300) };
+    item.replyToBot = ref.author.id === client.user.id;
+    item.quoted = { author: displayName(ref), content: (ref.cleanContent ?? '').slice(0, 300) };
     return ref;
   } catch (err) {
     logger.warn(`mensagem referenciada inacessível (${err.message}); seguindo sem citação`);
@@ -272,10 +275,10 @@ async function resolveReference(message, item) {
 // modo vision e guarda em item.images (src/images.js). Só com menção explícita
 // ao bot e autor na whitelist. Roda enquanto o lote espera; erro em uma imagem
 // vira um bloco "não foi possível analisar", e o lote segue.
-async function attachImages(item, reference, { isTarget, where, who }) {
+async function attachImages(item, reference, { where, who }) {
   const { message } = item;
   if (config.images.max <= 0) return;
-  const { images, rejected } = collectImages({ message, reference, mentionsBot: item.mentionsBot, isTarget, limits: config.images });
+  const { images, rejected } = collectImages({ message, reference, mentionsBot: item.mentionsBot, isTarget: item.target, limits: config.images });
   for (const r of rejected) logger.info({ canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
   if (images.length === 0) return;
   const hint = stripBotMention(item.content, message);
@@ -329,13 +332,12 @@ async function processBatch(items, run) {
   const { signal } = run;
   if (signal.aborted) return; // cancelado enquanto esperava na fila
   await Promise.all(items.map((item) => item.ready));
-  const last = items.at(-1).message;
-  const isTarget = config.targetUserIds.includes(last.author.id);
-  const mode = resolveMode({ guildId: last.guildId, isTarget }, config);
-  const key = sessionKey({ guildId: last.guildId, isTarget });
+  const { message: last, target } = items.at(-1);
+  const mode = resolveMode({ guildId: last.guildId, authorId: last.author.id }, config);
+  const key = sessionKey({ guildId: last.guildId, isTarget: target, mode });
   const where = `${last.guild.name} #${last.channel.name}`;
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
-  const mentions = isTarget ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
+  const mentions = target ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
   const now = Date.now();
   // Mesmo critério que askClaude vai aplicar: sessão nova recebe tudo de novo.
   const fresh = !store.get(key) || sessionResetReason(store.info(key), config.session, now) !== null;
@@ -348,7 +350,7 @@ async function processBatch(items, run) {
     items,
     context: ctx,
     mentions,
-    indexed: isTarget,
+    indexed: target,
     referenceTimestamp: last.createdTimestamp,
     emphasizeQuote: backend.name === 'commandcode',
   });
@@ -359,7 +361,7 @@ async function processBatch(items, run) {
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   if (config.judge && !forced) {
     const verdict = judge({
-      items: items.map((i) => ({ content: i.content, authorId: i.message.author.id, timestamp: i.message.createdTimestamp, replyToOther: Boolean(i.quoted) })),
+      items: items.map((i) => ({ content: i.content, authorId: i.message.author.id, timestamp: i.message.createdTimestamp, replyToOther: Boolean(i.quoted) && !i.replyToBot })),
       context: fullContext,
       now: last.createdTimestamp,
       botId: client.user.id,
@@ -404,10 +406,10 @@ async function processBatch(items, run) {
     } else if (isNoReply(res.text)) {
       logger.info({ canal: where, autor: displayName(last), ...stats }, `${backend.name} decidiu não responder: ${oneLine(last.cleanContent)}`);
     } else {
-      const { replyTo, text } = isTarget ? parseDirective(res.text) : { replyTo: null, text: res.text };
-      const target = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
-      logger.info({ ...stats, chars: text.length, respondendoA: target ? `#${replyTo}` : undefined }, 'enviando para o discord');
-      await send(target ?? last, text);
+      const { replyTo, text } = target ? parseDirective(res.text) : { replyTo: null, text: res.text };
+      const replyMessage = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
+      logger.info({ ...stats, chars: text.length, respondendoA: replyMessage ? `#${replyTo}` : undefined }, 'enviando para o discord');
+      await send(replyMessage ?? last, text);
       logger.info('resposta enviada');
     }
   } catch (err) {
@@ -496,6 +498,8 @@ async function send(message, text) {
 
 const uniqueBy = (list, keyOf) => [...new Map(list.map((x) => [keyOf(x), x])).values()];
 const displayName = (message) => message.member?.displayName ?? message.author.displayName;
+// Cargos do membro: GuildMember (cache de roles) ou, em interações sem cache, lista de ids.
+const roleIds = (member) => (Array.isArray(member?.roles) ? member.roles : [...(member?.roles?.cache?.keys() ?? [])]);
 const oneLine = (text) => (text ?? '').replace(/\s+/g, ' ');
 const preview = (text) => oneLine(text).slice(0, 80);
 
