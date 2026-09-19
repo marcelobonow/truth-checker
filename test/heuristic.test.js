@@ -109,3 +109,24 @@ test('judge: um reply a outra pessoa no lote marca o lote inteiro', () => {
   assert.equal(r.reply, false);
   assert.ok(r.hits.some((h) => h.includes('reply a outra pessoa')), JSON.stringify(r.hits));
 });
+
+test('scoreMessage: nome do bot como vocativo (sem artigo antes) pontua e cancela "curta"; com artigo/demonstrativo antes não', () => {
+  const names = ['Bot', 'Padre Bot'];
+  const greet = scoreMessage('bom dia bot', dict, WEIGHTS, { names });
+  assert.equal(greet.score, -2 + WEIGHTS.addressed, JSON.stringify(greet));
+  assert.ok(!greet.hits.includes('curta'));
+  assert.ok(scoreMessage('é verdade isso bot?', dict, WEIGHTS, { names }).hits.some((h) => h.startsWith('dirigida ao bot')));
+  assert.ok(scoreMessage('valeu, Padre Bot', dict, WEIGHTS, { names }).hits.some((h) => h.startsWith('dirigida ao bot')));
+  for (const t of ['esse bot ta muito burro', 'o bot ta muito briguento', 'esse padre bot fala demais', 'do bot']) {
+    assert.ok(!scoreMessage(t, dict, WEIGHTS, { names }).hits.some((h) => h.startsWith('dirigida ao bot')), t);
+  }
+  assert.ok(!scoreMessage('boa tarde bot', dict).hits.some((h) => h.startsWith('dirigida ao bot')));
+});
+
+test('judge: "boa tarde bot" passa o limiar; "boa tarde" solto não', () => {
+  const now = 1_000_000;
+  const cfg = { thresholdOwn: 3, thresholdTotal: 3, halfLifeMinutes: 10, maxContextBonus: 3 };
+  const base = { context: [], now, botId: 'bot', dictionary: dict, config: cfg, names: ['Bot'] };
+  assert.equal(judge({ ...base, items: [{ content: 'boa tarde bot', authorId: 'a', timestamp: now }] }).reply, true);
+  assert.equal(judge({ ...base, items: [{ content: 'boa tarde', authorId: 'a', timestamp: now }] }).reply, false);
+});

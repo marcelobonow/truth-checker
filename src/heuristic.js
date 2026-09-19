@@ -11,6 +11,7 @@ const WEIGHTS = {
   dictionaryCap: 3, // teto do dicionário numa mensagem
   short: -2,
   noise: -3,
+  addressed: 5, // nome do bot como vocativo ("boa tarde bot", "isso é verdade, bot?")
   replyToOther: -10, // reply a outra pessoa (não ao bot): a conversa é deles
   contextTopicCap: 2,
   botRecent: 2,
@@ -21,6 +22,8 @@ const INTERROGATIVES = ['como', 'por que', 'porque', 'pq', 'o que', 'oq', 'oque'
 const REQUESTS = ['alguem sabe', 'alguem conhece', 'alguem tem', 'alguem ja', 'me explica', 'me explique', 'explica ai', 'explica pra', 'explique', 'o que acham', 'oq acham', 'que acham', 'e se', 'me ajuda', 'me ajudem', 'como funciona', 'como assim', 'me diz', 'me diga', 'me fala', 'alguma fonte', 'tem fonte', 'qual a fonte', 'me indica', 'me recomenda', 'recomendam', 'indicam', 'opiniao de voces', 'opiniao', 'duvida', 'nao entendi', 'nao entendo'];
 const GROUP = ['alguem', 'voces', 'vcs', 'galera', 'pessoal', 'gente', 'povo', 'mano', 'manos', 'amigos', 'irmaos'];
 const STRONG = ['e obvio', 'obviamente', 'todo mundo sabe', 'mentira', 'errado', 'errada', 'na verdade', 'nunca', 'sempre', 'jamais', 'absurdo', 'ridiculo', 'falacia', 'nao faz sentido', 'prova', 'provem', 'provado', 'fato', 'e fato', 'claramente', 'sem duvida', 'com certeza', 'discordo', 'concordo', 'nao concordo', 'burrice', 'ignorancia', 'hipocrisia'];
+// Palavra antes do nome que faz dele sujeito/objeto, não vocativo ("o bot", "esse bot", "do bot").
+const DETERMINERS = new Set(['o', 'a', 'os', 'as', 'um', 'uma', 'uns', 'umas', 'esse', 'essa', 'esses', 'essas', 'este', 'esta', 'estes', 'estas', 'aquele', 'aquela', 'aqueles', 'aquelas', 'do', 'da', 'dos', 'das', 'no', 'na', 'nos', 'nas', 'ao', 'aos', 'pro', 'pra', 'pros', 'pras', 'pelo', 'pela', 'meu', 'minha', 'seu', 'sua', 'nosso', 'nossa', 'que', 'qual']);
 const LAUGH_RE = /^(?:k+|rs+|ha(?:ha)+|kk+|hue+|lol|rsrs+)$/;
 const URL_RE = /https?:\/\/\S+|www\.\S+/g;
 const EMOJI_RE = /[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu;
@@ -64,6 +67,23 @@ export function compileDictionary(entries) {
   });
 }
 
+// Nome do bot no texto normalizado como vocativo: sem artigo/demonstrativo/preposição
+// logo antes. Vírgula e ponto já foram apagados pelo normalize.
+export function addressedTo(text, names) {
+  // nomes longos primeiro: "esse padre bot" rejeitado por "padre bot" não pode
+  // voltar como "bot" precedido de "padre"
+  const sorted = [...new Set(names.map(normalize).filter(Boolean))].sort((a, b) => b.length - a.length);
+  let rest = text;
+  for (const n of sorted) {
+    const re = new RegExp(`(?:^|\\b(\\w+)\\s+)(${escape(n)})\\b`, 'g');
+    for (const m of rest.matchAll(re)) {
+      if (!m[1] || !DETERMINERS.has(m[1])) return n;
+    }
+    rest = rest.replace(new RegExp(`\\b${escape(n)}\\b`, 'g'), ' ');
+  }
+  return null;
+}
+
 const hasAny = (text, phrases) => phrases.find((p) => new RegExp(`\\b${escape(p)}\\b`).test(text)) ?? null;
 
 // Termos do dicionário presentes no texto normalizado (cada um conta uma vez).
@@ -75,7 +95,7 @@ export function dictionaryHits(text, dictionary) {
 // `replyToOther`: a mensagem é reply a outra pessoa (não ao bot). Aí "?",
 // interrogativas e pedidos são da conversa deles e não contam; só o quanto o
 // texto tem a ver com o assunto (dicionário, sem teto) contra o peso negativo.
-export function scoreMessage(raw, dictionary, weights = WEIGHTS, { replyToOther = false } = {}) {
+export function scoreMessage(raw, dictionary, weights = WEIGHTS, { replyToOther = false, names = [] } = {}) {
   const hits = [];
   let score = 0;
   const stripped = String(raw ?? '').replace(URL_RE, ' ').replace(CUSTOM_EMOJI_RE, ' ').replace(EMOJI_RE, ' ');
@@ -96,6 +116,8 @@ export function scoreMessage(raw, dictionary, weights = WEIGHTS, { replyToOther 
     return { score, hits, text };
   }
   if (/\?/.test(raw)) { score += weights.question; hits.push('tem ?'); }
+  const addressed = addressedTo(text, names);
+  if (addressed) { score += weights.addressed; hits.push(`dirigida ao bot: ${addressed}`); }
   const interrogative = hasAny(text, INTERROGATIVES);
   if (interrogative) { score += weights.interrogative; hits.push(`interrogativa: ${interrogative}`); }
   const request = hasAny(text, REQUESTS);
@@ -110,7 +132,7 @@ export function scoreMessage(raw, dictionary, weights = WEIGHTS, { replyToOther 
     score += sum;
     hits.push(`dicionario(${sum > 0 ? '+' : ''}${sum}): ${dict.map((d) => d.term).join(', ')}`);
   }
-  if (words.length < 4 && !/\?/.test(raw)) { score += weights.short; hits.push('curta'); }
+  if (words.length < 4 && !/\?/.test(raw) && !addressed) { score += weights.short; hits.push('curta'); }
   return { score, hits, text };
 }
 
@@ -124,13 +146,13 @@ export function contextFactor({ ageMs, positionFromEnd, halfLifeMinutes }) {
 // Decisão para um lote. `items`: mensagens novas ({ content, authorId, timestamp,
 // replyToOther }); `context`: anteriores em ordem cronológica ({ content,
 // authorId, timestamp }); `now`: timestamp da mensagem que disparou; `botId`:
-// para achar respostas do bot. Se qualquer mensagem nova é reply a outra
+// para achar respostas do bot; `names`: nomes do bot (vocativo sem @). Se qualquer mensagem nova é reply a outra
 // pessoa, o lote inteiro é tratado como dirigido a ela.
-export function judge({ items, context = [], now, botId, dictionary, config, weights = WEIGHTS }) {
+export function judge({ items, context = [], now, botId, names = [], dictionary, config, weights = WEIGHTS }) {
   const { thresholdOwn, thresholdTotal, halfLifeMinutes = 10, maxContextBonus = 3 } = config;
   const ownText = items.map((i) => i.content).join('\n');
   const replyToOther = items.some((i) => i.replyToOther);
-  const own = scoreMessage(ownText, dictionary, weights, { replyToOther });
+  const own = scoreMessage(ownText, dictionary, weights, { replyToOther, names });
   const hits = own.hits.map((h) => `[nova] ${h}`);
 
   let topic = 0;
