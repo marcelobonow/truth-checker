@@ -29,11 +29,11 @@ export const BACKEND = 'commandcode';
 // true: qualquer pessoa que mencionar @bot recebe resposta, sempre em modo web.
 export const MENTION_ANYONE = false;
 
-// true: só encaminha mensagens que sejam uma pergunta direta ou que mencionem
-// o bot (@bot / @Nome). Mensagens soltas são ignoradas já na chegada, sem
-// passar pelo juiz, dicionário ou análise de contexto. Replies sem pergunta
-// também são ignorados. false mantém o comportamento do JUDGE abaixo.
-export const QUESTIONS_AND_MENTIONS_ONLY = true;
+// true: só encaminha menções ao bot (@bot / @Nome) ou replies a uma mensagem
+// dele. Qualquer outra mensagem é ignorada já na chegada, sem passar pelo
+// juiz, dicionário ou análise de contexto. false mantém o comportamento do
+// JUDGE abaixo.
+export const MENTIONS_AND_REPLIES_ONLY = true;
 
 // Juiz local (só quando "responder: se couber", isto é, sem menção nem reply
 // ao bot): pontua as mensagens novas e o contexto na CPU (src/heuristic.js,

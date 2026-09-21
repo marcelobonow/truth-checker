@@ -31,6 +31,12 @@ export function shouldHandle(meta, config) {
   return skipReason(meta, config) === null;
 }
 
+// A mensagem se dirige explicitamente ao bot: por menção ou por reply a uma
+// resposta dele. Usado pelo modo MENTIONS_AND_REPLIES_ONLY.
+export function isDirectMessageToBot({ mentionsBot, replyToBot }) {
+  return Boolean(mentionsBot || replyToBot);
+}
+
 // Texto de verdade na mensagem (conteúdo bruto, com <@id>): menções de
 // usuário/cargo/canal sozinhas não contam. Mensagem só com imagem não é
 // analisada; "@bot" + imagem passa por outra regra (imagens em index.js).

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveMode, isTarget, shouldHandle, sessionKey, buildUserMessage, isNoReply, askClaude, formatStatus } from '../src/bridge.js';
+import { resolveMode, isTarget, shouldHandle, sessionKey, buildUserMessage, isNoReply, askClaude, formatStatus, isDirectMessageToBot } from '../src/bridge.js';
 
 const config = {
   targetUserIds: ['u1', 'u3'],
@@ -26,6 +26,12 @@ test('shouldHandle: usuário-alvo em servidor, sem ser bot', () => {
   assert.equal(shouldHandle(base, config), true);
   assert.equal(shouldHandle({ ...base, isBot: true }, config), false);
   assert.equal(shouldHandle({ ...base, guildId: null }, config), false);
+});
+
+test('isDirectMessageToBot: só menção ao bot ou reply a ele passa no modo estrito', () => {
+  assert.equal(isDirectMessageToBot({ mentionsBot: true, replyToBot: false }), true);
+  assert.equal(isDirectMessageToBot({ mentionsBot: false, replyToBot: true }), true);
+  assert.equal(isDirectMessageToBot({ mentionsBot: false, replyToBot: false }), false);
 });
 
 test('shouldHandle: outra pessoa só quando menciona o bot e MENTION_ANYONE está ligado', () => {
