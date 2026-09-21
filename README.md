@@ -11,8 +11,11 @@ já feito nesta máquina (sem API key). Design completo em
 - Servidores em `FULL_ACCESS_GUILD_IDS` (`src/settings.js`): Claude com **todas as ferramentas e
   sem pedir permissão** (programação remota no `WORK_DIR`). Qualquer outro
   servidor: só conversa + WebSearch/WebFetch.
-- Reply a uma mensagem do bot ou menção `@bot` (real ou "@Nome" escrito) →
-  responde sempre. Outras mensagens passam antes por um juiz local, sem
+- Com `QUESTIONS_AND_MENTIONS_ONLY = true` em `src/settings.js`, o bot só
+  encaminha perguntas diretas ou menções `@bot` (real ou "@Nome" escrito);
+  mensagens soltas e replies sem pergunta são ignorados sem juiz, dicionário
+  ou análise de contexto. Com a flag desligada, reply a uma mensagem do bot ou
+  menção `@bot` responde sempre. As outras mensagens passam antes por um juiz local, sem
   modelo ([src/heuristic.js](src/heuristic.js)): pontua a mensagem ("?",
   interrogativas, pedidos, termos de [src/dicionario.js](src/dicionario.js))
   mais um bônus do contexto recente, e só chama o modelo se passar dos

@@ -9,17 +9,19 @@ export function buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort
   const prompt = systemPrompt({ mode, workDir, extraPrompt });
   // stream-json (exige --verbose): um evento JSON por linha, o último é o resultado
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--append-system-prompt', prompt];
+  // Enxuto (web e vision): só as ferramentas listadas, sem skills, servidores
+  // MCP, agentes, plugins nem settings do usuário (--setting-sources vazio):
+  // menos tokens no system prompt e nada da máquina exposto a quem só menciona o bot.
+  const lean = ['--strict-mcp-config', '--disable-slash-commands', '--setting-sources', ''];
   if (mode === 'web') {
-    // Enxuto: só ferramentas web, sem skills nem servidores MCP da config global
-    // (menos tokens no system prompt e nada exposto a quem só menciona o bot).
-    args.push('--tools', WEB_TOOLS, '--allowedTools', WEB_TOOLS, '--strict-mcp-config', '--disable-slash-commands');
+    args.push('--tools', WEB_TOOLS, '--allowedTools', WEB_TOOLS, ...lean);
     // teto de idas à web por resposta: cada resultado de busca entra no contexto
     if (maxTurns) args.push('--max-turns', String(maxTurns));
   }
   if (mode === 'full') args.push('--dangerously-skip-permissions');
   // Descrição de imagem: só Read (o cwd é a pasta da imagem, e Read fora dele
   // é negado em -p), sem sessão; ler + responder cabe em poucos turnos.
-  if (mode === 'vision') args.push('--tools', 'Read', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '3');
+  if (mode === 'vision') args.push('--tools', 'Read', ...lean, '--max-turns', '3');
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
   if (sessionId && mode !== 'vision') args.push('--resume', sessionId);

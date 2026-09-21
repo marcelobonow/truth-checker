@@ -1,12 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalize, compileTerm, compileDictionary, scoreMessage, contextFactor, judge, WEIGHTS } from '../src/heuristic.js';
+import { normalize, compileTerm, compileDictionary, scoreMessage, contextFactor, judge, isQuestion, WEIGHTS } from '../src/heuristic.js';
 import { parseDictionary, DICIONARIO } from '../src/dicionario.js';
 
 const dict = compileDictionary([{ term: 'estado', weight: 1 }, { term: 'imposto*', weight: 1 }, { term: 'problema%calculo', weight: 2 }, { term: 'bom dia', weight: -2 }]);
 
 test('normalize: minúsculas, sem acento, sem pontuação, espaços simples', () => {
   assert.equal(normalize('  Olá, PORQUÊ?  não! '), 'ola porque nao');
+});
+
+test('isQuestion: aceita pontuação e formulações interrogativas, sem consultar o juiz', () => {
+  assert.equal(isQuestion('isso funciona?'), true);
+  assert.equal(isQuestion('como funciona isso'), true);
+  assert.equal(isQuestion('alguém sabe onde fica'), true);
+  assert.equal(isQuestion('fui no mercado hoje'), false);
 });
 
 test('compileTerm: palavra inteira, prefixo (*) e qualquer coisa no meio (%)', () => {

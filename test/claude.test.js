@@ -117,11 +117,13 @@ test('extraPrompt é anexado ao final do system prompt', () => {
   assert.ok(!flagValue(buildArgs({ mode: 'web' }), '--append-system-prompt').includes('undefined'));
 });
 
-test('modo web é enxuto: sem skills, sem MCP', () => {
+test('modo web é enxuto: sem skills, sem MCP, sem settings/agentes/plugins do usuário', () => {
   const args = buildArgs({ mode: 'web' });
   assert.ok(args.includes('--strict-mcp-config'));
   assert.ok(args.includes('--disable-slash-commands'));
-  assert.ok(!buildArgs({ mode: 'full' }).includes('--strict-mcp-config'));
+  assert.equal(flagValue(args, '--setting-sources'), '');
+  const full = buildArgs({ mode: 'full' });
+  assert.ok(!full.includes('--strict-mcp-config') && !full.includes('--setting-sources'));
 });
 
 test('model e effort viram --model/--effort só quando informados', () => {
@@ -263,6 +265,7 @@ test('modo vision: só Read, sem MCP/skills, teto de turnos, sem resume nem bypa
   assert.equal(flagValue(args, '--tools'), 'Read');
   assert.ok(!args.includes('--allowedTools'));
   assert.ok(args.includes('--strict-mcp-config') && args.includes('--disable-slash-commands'));
+  assert.equal(flagValue(args, '--setting-sources'), '');
   assert.equal(flagValue(args, '--max-turns'), '3');
   assert.ok(!args.includes('--resume'));
   assert.ok(!args.includes('--dangerously-skip-permissions'));

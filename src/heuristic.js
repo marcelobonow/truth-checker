@@ -86,6 +86,15 @@ export function addressedTo(text, names) {
 
 const hasAny = (text, phrases) => phrases.find((p) => new RegExp(`\\b${escape(p)}\\b`).test(text)) ?? null;
 
+// Checagem direta e sem contexto para o modo QUESTIONS_AND_MENTIONS_ONLY.
+// Não consulta dicionário nem pontuação do juiz: "?" ou uma formulação
+// interrogativa/pedido basta para a mensagem seguir ao modelo.
+export function isQuestion(raw) {
+  if (/\?/.test(String(raw ?? ''))) return true;
+  const text = normalize(String(raw ?? '').replace(URL_RE, ' ').replace(CUSTOM_EMOJI_RE, ' ').replace(EMOJI_RE, ' '));
+  return Boolean(hasAny(text, INTERROGATIVES) || hasAny(text, REQUESTS));
+}
+
 // Termos do dicionário presentes no texto normalizado (cada um conta uma vez).
 export function dictionaryHits(text, dictionary) {
   return dictionary.filter((d) => d.re.test(text));

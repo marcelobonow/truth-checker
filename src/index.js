@@ -8,12 +8,12 @@ import { createInflight } from './inflight.js';
 import { splitMessage } from './split.js';
 import { resolveMode, isTarget, skipReason, sessionKey, buildUserMessage, isNoReply, askClaude, selectContext, parseDirective, formatStatus, sessionResetReason, hasText, mentionsByName } from './bridge.js';
 import { selectBackend } from './backend.js';
-import { judge, compileDictionary } from './heuristic.js';
+import { judge, compileDictionary, isQuestion } from './heuristic.js';
 import { parseDictionary } from './dicionario.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { logger } from './logger.js';
-import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, QUESTIONS_AND_MENTIONS_ONLY, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -50,8 +50,9 @@ function loadPrompt(mode) {
   return { file: null, text: '' };
 }
 const prompts = { web: loadPrompt('web'), full: loadPrompt('full') };
-// termos do juiz local, compilados uma vez
-const dictionary = compileDictionary(parseDictionary());
+// O modo estrito não usa juiz nem dicionário; fora dele, termos do juiz são
+// compilados uma vez na inicialização.
+const dictionary = QUESTIONS_AND_MENTIONS_ONLY ? [] : compileDictionary(parseDictionary());
 
 const config = {
   targetUserIds: TARGET_USER_IDS.map(String),
@@ -59,6 +60,7 @@ const config = {
   fullAccessGuildIds: FULL_ACCESS_GUILD_IDS.map(String),
   watchChannelIds: list(env.WATCH_CHANNEL_IDS),
   mentionAnyone: Boolean(MENTION_ANYONE),
+  questionsAndMentionsOnly: Boolean(QUESTIONS_AND_MENTIONS_ONLY),
   workDir: env.WORK_DIR || ROOT,
   webDir: backend.webDir(ROOT),
   bin,
@@ -68,7 +70,7 @@ const config = {
   model: { web: MODEL.web || undefined, full: MODEL.full || undefined, vision: MODEL.vision || undefined },
   effort: { web: EFFORT.web || undefined, full: EFFORT.full || undefined, vision: EFFORT.vision || undefined },
   maxTurns: { web: WEB_MAX_TURNS || undefined },
-  judge: JUDGE || null,
+  judge: QUESTIONS_AND_MENTIONS_ONLY ? null : (JUDGE || null),
   images: IMAGES,
   // imagens baixadas para análise (apagadas depois); é o cwd da chamada de
   // visão, o que limita a ferramenta de leitura a esta pasta
@@ -132,6 +134,7 @@ client.once(Events.ClientReady, async (c) => {
     acessoTotal: config.fullAccessGuildIds,
     canais: config.watchChannelIds.length ? config.watchChannelIds : 'todos',
     mencaoDeQualquerUm: config.mentionAnyone,
+    soPerguntasEMencoes: config.questionsAndMentionsOnly,
     workDir: config.workDir,
     loteMs: config.batchDelayMs,
     promptExtra: { web: prompts.web.file, full: prompts.full.file },
@@ -217,6 +220,12 @@ client.on(Events.MessageCreate, async (message) => {
     // as próprias respostas do bot também chegam aqui: só em debug, para não poluir
     const level = message.author.id === client.user.id ? 'debug' : 'info';
     logger[level]({ canal: where, autor: who }, `não analisando (${skip}): ${oneLine(message.cleanContent)}`);
+    return;
+  }
+  // Modo estrito: a seleção é determinística e acontece antes de criar lote,
+  // buscar contexto ou rodar o juiz. Menções continuam sendo sempre atendidas.
+  if (config.questionsAndMentionsOnly && !mentionsBot && !isQuestion(message.content)) {
+    logger.info({ canal: where, autor: who }, `não analisando (QUESTIONS_AND_MENTIONS_ONLY): não é pergunta nem menção: ${oneLine(message.cleanContent)}`);
     return;
   }
   logger.info({ canal: where, autor: who, mencao: mentionsBot, reply: Boolean(message.reference) }, `mensagem recebida: ${oneLine(message.cleanContent)}`);
@@ -356,8 +365,9 @@ async function processBatch(items, run) {
   });
   const prompt = promptWith(context);
 
-  // Sem menção nem reply ao bot, o juiz local (CPU, sem modelo) decide antes
-  // se vale gerar; recebe o contexto completo, não só o novo.
+  // Fora do modo estrito, sem menção nem reply ao bot, o juiz local (CPU, sem
+  // modelo) decide antes se vale gerar; recebe o contexto completo, não só o
+  // novo. No modo estrito, a mensagem já foi filtrada como pergunta na chegada.
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   if (config.judge && !forced) {
     const verdict = judge({
