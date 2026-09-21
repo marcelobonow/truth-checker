@@ -14,7 +14,7 @@ import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { logger } from './logger.js';
-import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, BOT_NAME_ALIASES, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -205,9 +205,10 @@ client.on(Events.TypingStart, (typing) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  // menção real ou "@Nome" colado como texto
+  // menção real ou "@Nome" colado como texto (username, nome global, apelido
+  // do servidor ou alias configurado)
   const mentionsBot = message.mentions.users.has(client.user.id)
-    || mentionsByName(message.content, [client.user.username, message.guild?.members.me?.displayName]);
+    || [message.content, message.cleanContent].some((content) => mentionsByName(content, [client.user.username, client.user.globalName, message.guild?.members.me?.displayName, ...BOT_NAME_ALIASES]));
   const meta = {
     authorId: message.author.id,
     roleIds: roleIds(message.member),

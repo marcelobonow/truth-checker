@@ -30,3 +30,11 @@ test('systemPrompt: modos de conversa explicam o bloco de imagem', () => {
   assert.match(systemPrompt({ mode: 'web' }), /\[imagem anexada/);
   assert.match(systemPrompt({ mode: 'full', workDir: 'x' }), /\[imagem na mensagem citada/);
 });
+
+test('systemPrompt: modos de conversa informam os formatos de documento aceitos', () => {
+  const prompt = systemPrompt({ mode: 'web' });
+  assert.match(prompt, /Word \.doc e \.docx/);
+  assert.match(prompt, /PDF \.pdf/);
+  assert.match(prompt, /OpenDocument Text \.odt/);
+  assert.match(prompt, /Não lê vídeos, áudios/i);
+});

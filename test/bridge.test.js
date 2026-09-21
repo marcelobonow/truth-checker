@@ -523,6 +523,11 @@ import { mentionsByName } from '../src/bridge.js';
 test('mentionsByName: "@Nome" literal no texto (menção copiada/colada) conta como menção', () => {
   const names = ['Truth-Check', 'Truth Check Bot'];
   assert.equal(mentionsByName('@Truth-Check tu vai no uruguai?', names), true);
+  assert.equal(mentionsByName('**@Truth-Check** quais arquivos você consegue usar?', names), true);
+  assert.equal(mentionsByName('> @Truth-Check, opina', names), true);
+  assert.equal(mentionsByName('@Truth\u200B-Check quais arquivos você consegue usar?', names), true);
+  assert.equal(mentionsByName('@Truth‑Check quais arquivos você consegue usar?', names), true);
+  assert.equal(mentionsByName('(@Truth-Check) opina', names), true);
   assert.equal(mentionsByName('e aí @truth-check, opina', names), true);
   assert.equal(mentionsByName('fala @Truth Check Bot', names), true);
   assert.equal(mentionsByName('o truth-check disse que sim', names), false);

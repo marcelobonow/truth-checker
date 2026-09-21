@@ -35,6 +35,13 @@ export const MENTION_ANYONE = false;
 // JUDGE abaixo.
 export const MENTIONS_AND_REPLIES_ONLY = true;
 
+// Nomes que também acionam o bot quando escritos como texto, sem selecionar a
+// menção oficial do Discord. Útil para texto copiado/colado e para preservar um
+// nome público diferente do username ou do apelido atual no servidor.
+export const BOT_NAME_ALIASES = [
+  'Truth-Check',
+];
+
 // Juiz local (só quando "responder: se couber", isto é, sem menção nem reply
 // ao bot): pontua as mensagens novas e o contexto na CPU (src/heuristic.js,
 // termos em src/dicionario.js) e só chama o modelo se passar dos limiares.

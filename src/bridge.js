@@ -47,11 +47,25 @@ export function hasText(rawContent) {
 
 // "@Nome" escrito como texto (mensagem copiada/colada ou digitada sem escolher
 // no autocomplete): o Discord não registra menção, mas a intenção é a mesma.
-// `names`: nome de usuário e apelido do bot no servidor. Texto bruto, onde a
-// menção real aparece como <@id> e não confunde.
+// Formatação Markdown antes do @ (por exemplo, "**@Nome**") também conta: é
+// comum ao copiar uma mensagem. `names`: nome de usuário e apelido do bot no
+// servidor. Texto bruto, onde a menção real aparece como <@id> e não confunde.
 export function mentionsByName(rawContent, names) {
-  const text = rawContent ?? '';
-  return names.filter(Boolean).some((name) => new RegExp(`(^|\\s)@${escapeRegExp(name)}(?![\\w-])`, 'iu').test(text));
+  const text = normalizeMentionText(rawContent);
+  return names
+    .filter(Boolean)
+    .map(normalizeMentionText)
+    .some((name) => new RegExp(String.raw`(^|[\s\p{P}\p{S}])@${escapeRegExp(name)}(?![\p{L}\p{N}_-])`, 'iu').test(text));
+}
+
+// Texto copiado de outros clientes pode trazer zero-width spaces, NBSP ou um
+// hífen Unicode que parece o hífen comum. Eles não devem impedir alguém de
+// endereçar o bot pelo nome visível.
+function normalizeMentionText(value) {
+  return (value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/[\u2010-\u2015\u2212]/g, '-');
 }
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
