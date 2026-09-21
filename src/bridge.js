@@ -1,6 +1,7 @@
 import * as claude from './claude.js';
 import { NO_REPLY } from './prompts.js';
 import { formatImage } from './images.js';
+import { formatFile } from './files.js';
 
 // Regras de roteamento (ver docs/superpowers/specs, §2 e §3).
 
@@ -119,8 +120,8 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   if (indexed && mentions.length > 0) {
     header += `\npessoas citadas: ${mentions.map((m) => `${m.name} → <@${m.id}>`).join(', ')}`;
   }
-  // o que é do autor: descrições das imagens (src/images.js) no lugar delas, antes do texto
-  const own = items.map((item) => [...(item.images ?? []).map(formatImage), item.content].filter(Boolean).join(' '));
+  // o que é do autor: anexos e descrições das imagens entram antes do texto
+  const own = items.map((item) => [...(item.files ?? []).map(formatFile), ...(item.images ?? []).map(formatImage), item.content].filter(Boolean).join(' '));
   // citação: do próprio bot (pode ser antiga ou de outra sessão) ou de outra pessoa
   const quoteOf = (item) => {
     if (!item.quoted) return '';

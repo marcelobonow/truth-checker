@@ -12,8 +12,9 @@ import { judge, compileDictionary } from './heuristic.js';
 import { parseDictionary } from './dicionario.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
+import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { logger } from './logger.js';
-import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -72,6 +73,7 @@ const config = {
   maxTurns: { web: WEB_MAX_TURNS || undefined },
   judge: MENTIONS_AND_REPLIES_ONLY ? null : (JUDGE || null),
   images: IMAGES,
+  files: FILES,
   // imagens baixadas para análise (apagadas depois); é o cwd da chamada de
   // visão, o que limita a ferramenta de leitura a esta pasta
   imagesDir: path.join(ROOT, 'imagens'),
@@ -142,6 +144,7 @@ client.once(Events.ClientReady, async (c) => {
     esforco: config.effort,
     juiz: config.judge ? { ...config.judge, termos: dictionary.length } : null,
     imagens: config.images.max > 0 ? { ...config.images, modelo: config.model.vision ?? config.model.web ?? 'padrão do CLI' } : null,
+    arquivos: config.files.max > 0 ? config.files : null,
     webMaxTurns: WEB_MAX_TURNS,
     sessao: SESSION,
   }, 'configuração');
@@ -227,7 +230,7 @@ client.on(Events.MessageCreate, async (message) => {
     .filter((u) => u.id !== client.user.id)
     .map((u) => ({ id: u.id, name: message.mentions.members?.get(u.id)?.displayName ?? u.displayName }));
   // whitelist (id ou cargo) decidida na chegada: vale para o lote inteiro
-  const item = { message, target: isTarget(meta, config), content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions, images: [] };
+  const item = { message, target: isTarget(meta, config), content: message.cleanContent ?? '', replyToBot: false, mentionsBot, quoted: null, mentions, images: [], files: [] };
   let reference = null;
   let referenceResolved = false;
   // Modo estrito: uma menção passa de imediato. Sem ela, só um reply à nossa
@@ -248,16 +251,22 @@ client.on(Events.MessageCreate, async (message) => {
   // "@bot" + imagem anexada, ou "@bot" como reply (a citada pode ter imagem),
   // segue mesmo sem texto: a imagem é analisada (só whitelist, só com menção).
   const mayHaveImage = mentionsBot && item.target && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
-  if (!hasText(message.content) && !mayHaveImage) {
+  const mayHaveFile = item.target && config.files.max > 0 && message.attachments.size > 0;
+  if (!hasText(message.content) && !mayHaveImage && !mayHaveFile) {
     logger.info(`ignorada: sem texto (${message.attachments.size} anexo(s), ${message.embeds.length} embed(s))`);
     return;
   }
 
-  // Entra no lote já (preserva a ordem de chegada); a referência e as imagens
-  // são resolvidas em paralelo e aguardadas antes de montar o texto.
+  // Entra no lote já (preserva a ordem de chegada); a referência e os anexos
+  // são resolvidos em paralelo e aguardados antes de montar o texto.
   item.ready = (referenceResolved ? Promise.resolve(reference) : resolveReference(message, item))
-    .then((reference) => attachImages(item, reference, { where, who }))
-    .catch((err) => logger.warn({ canal: where, autor: who }, `análise de imagens falhou (${err.message}); seguindo sem imagens`));
+    .then(async (reference) => {
+      await Promise.all([
+        attachImages(item, reference, { where, who }),
+        attachFiles(item, reference, { where, who }),
+      ]);
+    })
+    .catch((err) => logger.warn({ canal: where, autor: who }, `leitura de anexos falhou (${err.message}); seguindo sem eles`));
   const key = `${message.channelId}:${message.author.id}`;
   // Autor mandou mensagem nova com o lote dele na fila ou buscando contexto: cancela e o
   // lote antigo volta para a espera junto com a nova, para uma resposta só.
@@ -323,6 +332,33 @@ async function attachImages(item, reference, { where, who }) {
   } finally {
     typing.stop();
   }
+}
+
+// Documentos não chamam outro modelo: são extraídos localmente e incluídos no
+// prompt. Só entram numa conversa explicitamente dirigida ao bot.
+async function attachFiles(item, reference, { where, who }) {
+  if (config.files.max <= 0) return;
+  const { files, rejected } = collectFiles({
+    message: item.message,
+    reference,
+    directedToBot: isDirectMessageToBot(item),
+    isTarget: item.target,
+    limits: config.files,
+  });
+  for (const file of rejected) logger.info({ canal: where, autor: who }, `arquivo ignorado: ${file.name} (${file.reason})`);
+  const unavailable = rejectedNonImages(rejected).map((file) => ({ ...file, error: file.reason }));
+  if (files.length === 0) {
+    item.files = unavailable;
+    return;
+  }
+  for (const file of files) logger.info({ canal: where, autor: who }, `arquivo recebido: ${file.name} → lendo`);
+  item.files = [...await readFiles(files, {
+    limits: config.files,
+    onResult: (file, seconds) => {
+      if (file.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao ler arquivo ${file.name}: ${file.error}`);
+      else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: file.text.length }, `arquivo lido: ${file.name}`);
+    },
+  }), ...unavailable];
 }
 
 // Texto da mensagem sem o "@bot" (cleanContent mostra menções como @Nome).

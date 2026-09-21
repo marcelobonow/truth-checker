@@ -68,6 +68,15 @@ export const IMAGES = {
   timeoutMs: 90_000, // por imagem
 };
 
+// Anexos que entram no prompt quando enviados numa menção ao bot ou reply a
+// ele. Aceita texto (.txt, .csv, .json etc.), Word (.doc/.docx), PDF e ODT.
+// max = 0 desliga. PDFs escaneados sem camada de texto não usam OCR.
+export const FILES = {
+  max: 3,
+  maxBytes: 8_000_000,
+  maxChars: 30_000,
+};
+
 // Reinício automático da sessão do Claude (o contexto não cresce sem limite):
 // começa uma sessão nova quando o total de mensagens já enviadas a ela (lote +
 // contexto) passar de `maxMessages`, quando o contexto da última rodada passar
