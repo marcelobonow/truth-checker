@@ -8,8 +8,9 @@ const limits = { max: 2, maxBytes: 100, maxChars: 20 };
 const fakeFetch = (body, headers = { 'content-type': 'text/plain' }) => async () => new Response(body, { headers });
 
 test('isReadableFile e pickFiles: aceita texto, Word, PDF e ODT respeitando limites', () => {
-  for (const name of ['dados.csv', 'texto.doc', 'texto.docx', 'arquivo.pdf', 'texto.odt']) assert.equal(isReadableFile(att(name)), true, name);
+  for (const name of ['dados.csv', 'texto.doc', 'texto.docx', 'arquivo.pdf', 'texto.odt', 'main.cpp', 'app.swift', 'modulo.ex']) assert.equal(isReadableFile(att(name)), true, name);
   assert.equal(isReadableFile(att('foto.png', { contentType: 'image/png' })), false);
+  assert.equal(isReadableFile(att('programa.exe')), false);
   const { files, rejected } = pickFiles([att('a.txt'), att('b.pdf'), att('c.odt'), att('foto.png'), att('grande.txt', { size: 101 })], limits);
   assert.deepEqual(files.map((f) => f.name), ['a.txt', 'b.pdf']);
   assert.ok(rejected.some((f) => f.name === 'c.odt' && f.reason.includes('passou')));
@@ -28,6 +29,7 @@ test('collectFiles: só whitelist em conversa dirigida ao bot; inclui anexo e ci
 
 test('readFile: lê texto, ODT e aplica corte', async () => {
   assert.equal(await readFile(att('a.txt'), { ...limits, fetchImpl: fakeFetch('olá') }), 'olá');
+  assert.equal(await readFile(att('main.cpp'), { ...limits, fetchImpl: fakeFetch('int main() {}', { 'content-type': 'application/octet-stream' }) }), 'int main() {}');
   assert.match(await readFile(att('a.txt'), { ...limits, fetchImpl: fakeFetch('x'.repeat(30)) }), /arquivo cortado em 20 caracteres/);
   const zip = new JSZip();
   zip.file('content.xml', '<office:document-content><text:p>Olá <text:span>mundo</text:span></text:p></office:document-content>');

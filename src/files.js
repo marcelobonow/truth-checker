@@ -22,6 +22,12 @@ const TYPES = new Set([
   'application/vnd.oasis.opendocument.text',
 ]);
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const BINARY_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSIONS,
+  '.mp3', '.wav', '.ogg', '.flac', '.m4a', '.mp4', '.mkv', '.mov', '.avi', '.webm',
+  '.zip', '.rar', '.7z', '.gz', '.bz2', '.xz', '.tar', '.iso',
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm', '.class', '.jar',
+]);
 
 const typeOf = (value) => (value ?? '').split(';')[0].trim().toLowerCase();
 const extensionOf = (name) => path.extname(name ?? '').toLowerCase();
@@ -30,8 +36,21 @@ function isImageFile({ name = '', contentType } = {}) {
   return IMAGE_EXTENSIONS.has(extensionOf(name)) || typeOf(contentType).startsWith('image/');
 }
 
+function isDefinitelyBinaryFile({ name = '', contentType } = {}) {
+  const type = typeOf(contentType);
+  return BINARY_EXTENSIONS.has(extensionOf(name))
+    || type.startsWith('image/')
+    || type.startsWith('audio/')
+    || type.startsWith('video/')
+    || ['application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed', 'application/gzip', 'application/x-bzip2', 'application/x-executable', 'application/wasm'].includes(type);
+}
+
 export function isReadableFile({ name = '', contentType } = {}) {
-  return EXTENSIONS.has(extensionOf(name)) || TYPES.has(typeOf(contentType)) || typeOf(contentType).startsWith('text/');
+  // Não há uma lista confiável e finita de extensões de linguagens. Arquivos
+  // desconhecidos seguem para leitura como texto; decodeText rejeita binários
+  // (NUL) depois do download limitado. Os formatos inequivocamente binários
+  // continuam recusados antes de ocupar uma vaga de anexo.
+  return !isDefinitelyBinaryFile({ name, contentType });
 }
 
 export function pickFiles(attachments, { max, maxBytes }) {
