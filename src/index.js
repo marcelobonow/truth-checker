@@ -644,15 +644,16 @@ async function send(message, text) {
   const chunks = splitMessage(text);
   if (chunks.length === 0) return;
   const allowedMentions = { parse: ['users'], repliedUser: true }; // nunca @everyone/cargos vindos do texto gerado
+  const flags = MessageFlags.SuppressEmbeds;
   try {
-    await message.reply({ content: chunks[0], allowedMentions });
+    await message.reply({ content: chunks[0], allowedMentions, flags });
   } catch (err) {
     // Mensagem original apagada durante o processamento: manda no canal mesmo assim
     logger.warn(`reply falhou (${err.message}); enviando no canal`);
-    await message.channel.send({ content: chunks[0], allowedMentions });
+    await message.channel.send({ content: chunks[0], allowedMentions, flags });
   }
   for (const chunk of chunks.slice(1)) {
-    await message.channel.send({ content: chunk, allowedMentions });
+    await message.channel.send({ content: chunk, allowedMentions, flags });
   }
 }
 
