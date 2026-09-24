@@ -52,6 +52,13 @@ já feito nesta máquina (sem API key). Design completo em
   sessão passa de 400 mensagens enviadas ao Claude ou fica 1 h sem uso
   (`SESSION` em `src/settings.js`). Com `RESET_ON_START = true` (padrão), reiniciar
   o bot também limpa todas as sessões.
+- Modelo por usuário: `/model modelo:<nome>` escolhe o modelo usado nas
+  respostas para você, entre os de `MODEL_CHOICES`
+  (`src/settings.<backend>.js`; lista vazia desliga os comandos). A escolha fica
+  salva em `models.db` (SQLite, sobrevive a reinícios) e vale para os dois
+  modos; `modelo:padrão` volta ao modelo das settings. `/model-list` lista quem
+  saiu do padrão. Só a whitelist/cargos podem usar (design em
+  [docs/model-selector.md](docs/model-selector.md)).
 
 ## Requisitos
 
@@ -117,7 +124,8 @@ Anthropic) e o log fica sem custo estimado.
 ## Logs
 
 Console legível e arquivo `logs/bot.log` (JSON por linha, via pino). Cada
-lote registra: mensagem recebida → espera do lote → "gerando com claude" →
+lote registra: mensagem recebida → espera do lote → "gerando com
+deepseek/deepseek-v4.1-flash" (o modelo usado no lote, escolhido ou padrão) →
 o que o Claude está fazendo ("procurando na web: …", "executando comando: …")
 → envio ao Discord, com tempo, turnos e custo estimado. `LOG_LEVEL` no `.env`.
 

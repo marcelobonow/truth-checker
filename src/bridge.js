@@ -197,7 +197,10 @@ export function sessionResetReason(info, { maxMessages, maxContextTokens = 0, id
 // Uma execução do claude na sessão `key`, com retomada; se a sessão salva não
 // existir mais, apaga e tenta uma vez do zero. `messageCount` (mensagens do
 // lote + contexto) alimenta o reinício automático por volume/inatividade.
-export async function askClaude({ key, mode, prompt, store, config, backend = claude, runner = backend.run, onEvent, messageCount = 0, now = Date.now(), signal }) {
+// `model` (escolha do usuário, /model) sobrepõe o modelo do config; `effort`
+// idem para o esforço (a escolha pode fixar um por modelo; null = sem --effort,
+// mesmo com EFFORT do modo setado).
+export async function askClaude({ key, mode, prompt, store, config, backend = claude, runner = backend.run, onEvent, messageCount = 0, now = Date.now(), signal, model, effort }) {
   const cwd = mode === 'full' ? config.workDir : config.webDir;
   const sessionReset = config.session ? sessionResetReason(store.info?.(key), config.session, now) : null;
   if (sessionReset) store.clear(key);
@@ -208,8 +211,8 @@ export async function askClaude({ key, mode, prompt, store, config, backend = cl
         sessionId,
         workDir: cwd,
         extraPrompt: config.extraPrompt?.[mode],
-        model: config.model?.[mode],
-        effort: config.effort?.[mode],
+        model: model ?? config.model?.[mode],
+        effort: effort === undefined ? config.effort?.[mode] : effort,
         maxTurns: config.maxTurns?.[mode],
         prompt,
       }),

@@ -204,6 +204,36 @@ test('askClaude: modelo e esforço por modo chegam aos args quando configurados'
   assert.ok(!full.args.includes('--model') && !full.args.includes('--effort'));
 });
 
+test('askClaude: model explícito (escolha do usuário) sobrepõe o do config', async () => {
+  const store = memoryStore();
+  const runner = stubRunner(() => ok('s1'));
+  const cfg = { ...config, model: { web: 'sonnet', full: 'sonnet' } };
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config: cfg, runner, model: 'opus' });
+  await askClaude({ key: 'g2', mode: 'full', prompt: 'oi', store, config: cfg, runner, model: 'opus' });
+  assert.equal(runner.calls[0].args[runner.calls[0].args.indexOf('--model') + 1], 'opus');
+  assert.equal(runner.calls[1].args[runner.calls[1].args.indexOf('--model') + 1], 'opus');
+});
+
+test('askClaude com backend commandcode: model explícito vira -m', async () => {
+  const store = memoryStore();
+  const runner = stubRunner(() => ok('s1'));
+  const cfg = { ...config, model: { web: 'sonnet' } };
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config: cfg, backend: commandcode, runner, model: 'moonshotai/kimi-k3' });
+  const args = runner.calls[0].args;
+  assert.equal(args[args.indexOf('-m') + 1], 'moonshotai/kimi-k3');
+});
+
+test('askClaude: effort explícito (escolha do usuário) sobrepõe o do config', async () => {
+  const store = memoryStore();
+  const runner = stubRunner(() => ok('s1'));
+  const cfg = { ...config, effort: { web: 'low' } };
+  await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config: cfg, runner, model: 'gpt-6-luna', effort: 'high' });
+  await askClaude({ key: 'g2', mode: 'web', prompt: 'oi', store, config: cfg, runner, model: 'gpt-6-luna', effort: null });
+  const [alto, sem] = runner.calls;
+  assert.equal(alto.args[alto.args.indexOf('--effort') + 1], 'high');
+  assert.ok(!sem.args.includes('--effort')); // null = "sem thinking", mesmo com EFFORT do modo
+});
+
 test('askClaude: detecta sessão inválida no stderr completo, mesmo com ruído antes da frase', async () => {
   const store = memoryStore();
   store.set('g', 'velha');
@@ -236,6 +266,15 @@ test('selectContext: últimas N do canal + últimas M do autor, sem duplicar, em
   for (let i = 1; i <= 20; i++) history.push(msg(String(i), i <= 9 && i % 2 ? 'a' : 'b', i));
   const ctx = selectContext(history, { channel: 3, author: 2, authorId: 'a', excludeIds: [] });
   assert.deepEqual(ctx.map((m) => m.id), ['7', '9', '18', '19', '20']);
+});
+
+test('selectContext: 10 do canal + 5 do autor + 5 do bot fica limitado a 20, sem duplicatas', () => {
+  const history = [];
+  for (let i = 1; i <= 5; i++) history.push(msg(String(i), 'a', i));
+  for (let i = 6; i <= 10; i++) history.push(msg(String(i), 'bot', i));
+  for (let i = 11; i <= 20; i++) history.push(msg(String(i), 'outro', i));
+  const ctx = selectContext(history, { channel: 10, author: 5, authorIds: ['a', 'bot'], excludeIds: [] });
+  assert.deepEqual(ctx.map((m) => m.id), Array.from({ length: 20 }, (_, i) => String(i + 1)));
 });
 
 test('selectContext: exclui as mensagens do próprio lote e as vazias', () => {

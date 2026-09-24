@@ -55,7 +55,8 @@ export const JUDGE = {
 
 // Contexto enviado junto com cada lote: busca as últimas `fetch` mensagens do
 // canal, inclui as últimas `channel` delas e, dentro das mesmas `fetch`, as
-// últimas `author` de quem escreveu (se tiver menos, entra o que houver).
+// últimas `author` de quem escreveu e do próprio bot (se tiver menos, entra o
+// que houver).
 // Unidas sem duplicar, em ordem cronológica. channel = 0 e author = 0 desliga.
 export const CONTEXT = {
   fetch: 50,

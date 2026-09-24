@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Client, Events, GatewayIntentBits, InteractionContextType, MessageFlags } from 'discord.js';
+import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, InteractionContextType, MessageFlags } from 'discord.js';
 import { createSessionStore } from './sessions.js';
 import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
@@ -13,6 +13,7 @@ import { parseDictionary } from './dicionario.js';
 import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
+import { createModelStore, DEFAULT_MODEL_CHOICE, formatModelList, normalizeChoices, choiceValue, choiceName } from './models.js';
 import { logger } from './logger.js';
 import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, BOT_NAME_ALIASES, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
 
@@ -33,7 +34,19 @@ function required(name) {
 }
 
 // CLI que gera as respostas (claude ou command-code) e os modelos dele
-const { backend, settings: { MODEL, EFFORT, WEB_MAX_TURNS } } = await selectBackend(BACKEND).catch(fatal);
+const { backend, settings: { MODEL, EFFORT, WEB_MAX_TURNS, MODEL_CHOICES = [] } } = await selectBackend(BACKEND).catch(fatal);
+// Modelos que os usuários podem escolher (/model): allowlist do settings do
+// backend; lista vazia desliga /model e /model-list (docs/model-selector.md).
+// O valor da escolha (o que o Discord devolve e o banco guarda) é
+// "model" ou "model:effort", permitindo o mesmo modelo em esforços diferentes.
+const modelChoices = normalizeChoices(MODEL_CHOICES);
+const entryByValue = new Map(modelChoices.map((entry) => [choiceValue(entry), entry]));
+if (entryByValue.size !== modelChoices.length) {
+  fatal(new Error('MODEL_CHOICES com valores repetidos (mesmo modelo e esforço)'));
+}
+if (modelChoices.length > 24) {
+  fatal(new Error('MODEL_CHOICES com mais de 24 modelos: o Discord aceita 25 choices e um é o "padrão"'));
+}
 let bin;
 try {
   bin = backend.resolveBin(env);
@@ -90,16 +103,32 @@ if (config.targetUserIds.length === 0) {
 }
 
 const store = createSessionStore(path.join(ROOT, 'sessions.json'), { onError: (msg) => logger.warn(msg) });
+// Escolhas de modelo por usuário (docs/model-selector.md): SQLite local que NÃO
+// entra no RESET_ON_START — preferência, não contexto de conversa.
+let modelStore = null;
+if (modelChoices.length > 0) {
+  try {
+    modelStore = createModelStore(path.join(ROOT, 'models.db'), { onError: (msg) => logger.warn(msg) });
+  } catch (err) {
+    fatal(new Error(`não consegui abrir models.db: ${err.message}`));
+  }
+}
 if (RESET_ON_START) {
   const n = store.clearAll();
   if (n > 0) logger.info(`sessões anteriores apagadas ao iniciar (${n})`);
 }
 const queue = createQueue();
 const inflight = createInflight();
-// Por sessão: timestamp da mensagem mais recente já enviada ao Claude. A
-// sessão retomada lembra o que recebeu, então cada rodada só acrescenta o que
-// veio depois; na primeira rodada (sessão nova) vai o contexto completo.
+// Cada sessão é compartilhada no servidor, mas o contexto é do canal. O
+// marcador, portanto, precisa ser por sessão e canal: uma conversa em outro
+// canal não pode fazer o bot achar que já viu as mensagens deste aqui.
 const sentUpTo = new Map();
+const contextMarkerKey = (session, channelId) => `${session}\u0000${channelId}`;
+const clearContextMarkers = (session) => {
+  for (const marker of sentUpTo.keys()) {
+    if (marker.startsWith(`${session}\u0000`)) sentUpTo.delete(marker);
+  }
+};
 const batcher = createBatcher({
   delayMs: config.batchDelayMs,
   onFlush: (key, items) => {
@@ -117,6 +146,24 @@ const client = new Client({
 const COMMANDS = [
   { name: 'reset', description: 'Reinicia a sessão do Claude neste servidor', contexts: [InteractionContextType.Guild] },
   { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
+  ...(modelChoices.length > 0 ? [
+    {
+      name: 'model',
+      description: 'Escolhe o modelo que o bot usa com você (ou volta ao padrão)',
+      contexts: [InteractionContextType.Guild],
+      options: [{
+        type: ApplicationCommandOptionType.String,
+        name: 'modelo',
+        description: 'Modelo da lista, ou "padrão" para voltar ao modelo configurado',
+        required: true,
+        choices: [
+          { name: `${DEFAULT_MODEL_CHOICE} (volta ao modelo das settings)`, value: DEFAULT_MODEL_CHOICE },
+          ...modelChoices.map((entry) => ({ name: choiceName(entry), value: choiceValue(entry) })),
+        ],
+      }],
+    },
+    { name: 'model-list', description: 'Lista quem escolheu um modelo diferente do padrão', contexts: [InteractionContextType.Guild] },
+  ] : []),
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -188,10 +235,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.deferReply(ephemeral);
     queue.add(async () => {
       store.clear(key);
-      sentUpTo.delete(key);
+      clearContextMarkers(key);
       logger.info({ canal: where }, 'sessão reiniciada');
       await interaction.editReply('Sessão reiniciada.');
     }).catch((err) => logger.error({ err }, 'falha no reset'));
+    return;
+  }
+
+  if (interaction.commandName === 'model') {
+    const choice = interaction.options.getString('modelo', true);
+    const reset = choice === DEFAULT_MODEL_CHOICE;
+    // Revalida contra a lista atual: o registro global do comando pode estar
+    // defasado (até ~1 h) em relação ao MODEL_CHOICES do settings.
+    const entry = entryByValue.get(choice);
+    if (!reset && !entry) {
+      await interaction.reply({ content: `Modelo fora da lista: \`${choice}\`.`, ...ephemeral });
+      return;
+    }
+    const saved = reset ? modelStore?.clear(interaction.user.id) : modelStore?.set(interaction.user.id, choice);
+    if (saved === false) {
+      await interaction.reply({ content: '⚠️ Não consegui salvar sua escolha.', ...ephemeral });
+      return;
+    }
+    logger.info({ canal: where, autor: who, modelo: reset ? DEFAULT_MODEL_CHOICE : choiceName(entry) }, 'modelo escolhido');
+    await interaction.reply({ content: reset ? 'Voltei ao modelo padrão.' : `Modelo definido: \`${choiceName(entry)}\`.`, ...ephemeral });
+    return;
+  }
+
+  if (interaction.commandName === 'model-list') {
+    const rows = (modelStore?.list() ?? []).map((row) => ({ ...row, model: entryByValue.has(row.model) ? choiceName(entryByValue.get(row.model)) : row.model }));
+    await interaction.reply({ content: formatModelList(rows), allowedMentions: { parse: [] }, ...ephemeral });
+    return;
   }
 });
 
@@ -394,10 +468,13 @@ async function processBatch(items, run) {
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
   const mentions = target ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
   const now = Date.now();
-  // Mesmo critério que askClaude vai aplicar: sessão nova recebe tudo de novo.
+  // A sessão retomada já conhece o que recebeu anteriormente. Só acrescenta
+  // as mensagens posteriores ao seu marcador neste canal (até o limite de
+  // CONTEXT.channel), evitando duplicar o contexto a cada chamada.
   const fresh = !store.get(key) || sessionResetReason(store.info(key), config.session, now) !== null;
-  if (fresh) sentUpTo.delete(key);
-  const { full: fullContext, fresh: context } = await fetchContext(items, mentions.map((m) => m.id), sentUpTo.get(key));
+  if (fresh) clearContextMarkers(key);
+  const marker = contextMarkerKey(key, last.channelId);
+  const { full: fullContext, fresh: context } = await fetchContext(items, sentUpTo.get(marker));
   const promptWith = (ctx) => buildUserMessage({
     guildName: last.guild.name,
     channelName: last.channel.name,
@@ -433,7 +510,14 @@ async function processBatch(items, run) {
     logger.info(detail, 'juiz local: responder');
   }
 
-  logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${backend.name}`);
+  // Modelo do autor: a escolha salva (/model) sobrepõe MODEL/EFFORT do settings.
+  // Escolha fora da lista atual (mudou o MODEL_CHOICES) volta ao padrão.
+  const savedChoice = modelStore?.get(last.author.id);
+  const entry = entryByValue.get(savedChoice);
+  if (savedChoice && !entry) {
+    logger.warn({ canal: where, autor: displayName(last), escolha: savedChoice }, 'escolha de modelo fora da lista atual: usando o padrão');
+  }
+  logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${entry ? choiceName(entry) : (config.model?.[mode] ?? 'padrão do CLI')}`);
   const typing = startTyping(last.channel);
   const started = Date.now();
   const onEvent = (event) => {
@@ -446,12 +530,13 @@ async function processBatch(items, run) {
   inflight.lock(run);
   try {
     const sessionBefore = store.get(key);
-    const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length });
+    const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length, model: entry?.model, effort: entry?.effort });
     if (!fresh && !res.sessionReset && res.sessionId && res.sessionId !== sessionBefore) {
-      // sessão salva sumiu e o CLI começou outra só com este lote: na próxima rodada vai tudo de novo
-      sentUpTo.delete(key);
+      // O CLI perdeu a sessão e abriu outra só com este lote: o próximo lote
+      // precisa levar o contexto completo novamente.
+      clearContextMarkers(key);
     } else {
-      sentUpTo.set(key, Math.max(...items.map((i) => i.message.createdTimestamp), ...context.map((m) => m.timestamp)));
+      sentUpTo.set(marker, latestMarker([...items.map((item) => item.message), ...context]));
     }
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     if (res.sessionReset) logger.info(`sessão reiniciada automaticamente (${res.sessionReset})`);
@@ -496,10 +581,12 @@ async function resolveReplyTarget(channel, entry, index) {
 }
 
 // Últimas mensagens do canal antes do lote, para o Claude entender o assunto.
-// `extraAuthorIds`: pessoas citadas, cujas últimas mensagens também entram.
-// Devolve { full, fresh }: `full` é a seleção completa (para o juiz, que não
-// tem sessão); `fresh` só o que veio depois de `after` (a sessão já viu o resto).
-async function fetchContext(items, extraAuthorIds = [], after = 0) {
+// A seleção une até 10 do canal, 5 do autor que chamou o bot e 5 do próprio
+// bot; por deduplicação, o total fica entre 10 e 20 quando há histórico.
+// Devolve { full, fresh }: `full` é a seleção completa (para o juiz e imagens,
+// que não têm sessão); `fresh` só contém mensagens posteriores ao marcador da
+// sessão neste canal.
+async function fetchContext(items, after) {
   if (CONTEXT.channel <= 0 && CONTEXT.author <= 0) return { full: [], fresh: [] };
   const first = items[0].message;
   try {
@@ -516,15 +603,32 @@ async function fetchContext(items, extraAuthorIds = [], after = 0) {
       author: CONTEXT.author,
       // client.user.id garante as últimas `CONTEXT.author` respostas do próprio
       // bot no contexto, mesmo se elas não estiverem entre as últimas do canal.
-      authorIds: [first.author.id, client.user.id, ...extraAuthorIds],
+      authorIds: [first.author.id, client.user.id],
       excludeIds: items.map((i) => i.message.id),
     });
     const full = select(history);
-    return { full, fresh: after > 0 ? select(history.filter((m) => m.timestamp > after)) : full };
+    return { full, fresh: after ? select(history.filter((m) => isAfter(m, after))) : full };
   } catch (err) {
     logger.warn(`não consegui ler o histórico do canal (${err.message}); seguindo sem contexto`);
     return { full: [], fresh: [] };
   }
+}
+
+// IDs do Discord são snowflakes e preservam a ordem, inclusive quando duas
+// mensagens recebem o mesmo createdTimestamp. O timestamp fica como fallback
+// para objetos de teste ou mensagens sem id numérico.
+function isAfter(message, marker) {
+  try {
+    return BigInt(message.id) > BigInt(marker.id);
+  } catch {
+    return message.timestamp > marker.timestamp;
+  }
+}
+
+function latestMarker(messages) {
+  return messages.reduce((latest, message) => (!latest || isAfter(message, latest)
+    ? { id: message.id, timestamp: message.createdTimestamp ?? message.timestamp }
+    : latest), null);
 }
 
 // Indicador "digitando" dura ~10 s por envio: renova a cada 8 s enquanto o

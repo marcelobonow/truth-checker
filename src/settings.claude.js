@@ -8,6 +8,16 @@ export const MODEL = {
   vision: null, // descrição de imagens (IMAGES em settings.js); null = mesmo do web
 };
 
+// Modelos que os usuários podem escolher com /model (docs/model-selector.md).
+// Entradas `{ model, effort?, nome? }` (string = só o modelo). Só o que está
+// listado aqui pode ser escolhido; lista vazia desliga /model e /model-list.
+// Máximo de 24 (o Discord aceita 25 choices e um é o "padrão").
+export const MODEL_CHOICES = [
+  "sonnet",
+  "opus",
+  "haiku",
+];
+
 // Esforço por modo: 'low' | 'medium' | 'high' | 'xhigh' | 'max'. null = padrão do CLI.
 export const EFFORT = {
   web: 'low',
