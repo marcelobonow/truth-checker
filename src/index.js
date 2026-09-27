@@ -14,6 +14,7 @@ import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { createModelStore, DEFAULT_MODEL_CHOICE, formatModelList, normalizeChoices, choiceValue, choiceName } from './models.js';
+import { createUserPromptStore, formatPromptListPages, MAX_USER_PROMPT_LENGTH } from './user-prompts.js';
 import { logger } from './logger.js';
 import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, BOT_NAME_ALIASES, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
 
@@ -113,6 +114,12 @@ if (modelChoices.length > 0) {
     fatal(new Error(`não consegui abrir models.db: ${err.message}`));
   }
 }
+let userPromptStore;
+try {
+  userPromptStore = createUserPromptStore(path.join(ROOT, 'user-prompts.db'), { onError: (msg) => logger.warn(msg) });
+} catch (err) {
+  fatal(new Error(`não consegui abrir user-prompts.db: ${err.message}`));
+}
 if (RESET_ON_START) {
   const n = store.clearAll();
   if (n > 0) logger.info(`sessões anteriores apagadas ao iniciar (${n})`);
@@ -164,6 +171,19 @@ const COMMANDS = [
     },
     { name: 'model-list', description: 'Lista quem escolheu um modelo diferente do padrão', contexts: [InteractionContextType.Guild] },
   ] : []),
+  {
+    name: 'prompt',
+    description: 'Define ou remove seu prompt personalizado',
+    contexts: [InteractionContextType.Guild],
+    options: [{
+      type: ApplicationCommandOptionType.String,
+      name: 'texto',
+      description: 'Seu prompt (até 1000 caracteres); deixe vazio para remover',
+      required: false,
+      max_length: MAX_USER_PROMPT_LENGTH,
+    }],
+  },
+  { name: 'prompt-list', description: 'Lista quem definiu um prompt personalizado', contexts: [InteractionContextType.Guild] },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -265,6 +285,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.commandName === 'model-list') {
     const rows = (modelStore?.list() ?? []).map((row) => ({ ...row, model: entryByValue.has(row.model) ? choiceName(entryByValue.get(row.model)) : row.model }));
     await interaction.reply({ content: formatModelList(rows), allowedMentions: { parse: [] }, ...ephemeral });
+    return;
+  }
+
+  if (interaction.commandName === 'prompt') {
+    const prompt = interaction.options.getString('texto');
+    if (prompt !== null && (!prompt.trim() || Array.from(prompt).length > MAX_USER_PROMPT_LENGTH)) {
+      await interaction.reply({ content: `O prompt deve ter entre 1 e ${MAX_USER_PROMPT_LENGTH} caracteres.`, ...ephemeral });
+      return;
+    }
+    const saved = prompt === null ? userPromptStore.clear(interaction.user.id) : userPromptStore.set(interaction.user.id, prompt);
+    await interaction.reply({ content: saved ? (prompt === null ? 'Prompt personalizado removido.' : 'Prompt personalizado salvo.') : '⚠️ Não consegui salvar seu prompt.', ...ephemeral });
+    return;
+  }
+
+  if (interaction.commandName === 'prompt-list') {
+    const pages = formatPromptListPages(userPromptStore.list());
+    await interaction.reply({ content: pages[0], allowedMentions: { parse: [] }, ...ephemeral });
+    for (const content of pages.slice(1)) await interaction.followUp({ content, allowedMentions: { parse: [] }, ...ephemeral });
     return;
   }
 });
@@ -465,6 +503,7 @@ async function processBatch(items, run) {
   const mode = resolveMode({ guildId: last.guildId, authorId: last.author.id }, config);
   const key = sessionKey({ guildId: last.guildId, isTarget: target, mode });
   const where = `${last.guild.name} #${last.channel.name}`;
+  const userPrompt = target ? userPromptStore.get(last.author.id) : undefined;
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
   const mentions = target ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
   const now = Date.now();
@@ -485,6 +524,7 @@ async function processBatch(items, run) {
     indexed: target,
     referenceTimestamp: last.createdTimestamp,
     emphasizeQuote: backend.name === 'commandcode',
+    userPrompt,
   });
   const prompt = promptWith(context);
 

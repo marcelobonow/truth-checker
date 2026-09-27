@@ -59,6 +59,11 @@ já feito nesta máquina (sem API key). Design completo em
   modos; `modelo:padrão` volta ao modelo das settings. `/model-list` lista quem
   saiu do padrão. Só a whitelist/cargos podem usar (design em
   [docs/model-selector.md](docs/model-selector.md)).
+- Prompt por usuário: `/prompt texto:<texto>` salva até 1000 caracteres para
+  orientar as respostas a você nos modos web e full; `/prompt` sem texto remove
+  o prompt. `/prompt-list` mostra quem configurou um prompt e os primeiros 25
+  caracteres de cada um. Os prompts ficam em `user-prompts.db` (SQLite) e os
+  comandos usam a mesma whitelist/cargos de `/model`.
 
 ## Requisitos
 
