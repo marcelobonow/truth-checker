@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, InteractionContextType, LabelBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
+import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, InteractionContextType, LabelBuilder, MessageFlags, ModalBuilder, Status, TextInputBuilder, TextInputStyle } from 'discord.js';
 import { createSessionStore } from './sessions.js';
 import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
@@ -15,6 +15,8 @@ import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { createModelStore, DEFAULT_MODEL_CHOICE, formatModelList, normalizeChoices, choiceValue, choiceName } from './models.js';
 import { createUserPromptStore, formatPromptListPages, MAX_USER_PROMPT_LENGTH } from './user-prompts.js';
+import { createDisabledMonitor, createMonitor } from './monitor.js';
+import { createBackendMetricHandler } from './monitor-events.js';
 import { logger } from './logger.js';
 import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, BOT_NAME_ALIASES, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
 
@@ -151,10 +153,70 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageTyping],
 });
 
+let monitor;
+try {
+  monitor = createMonitor(path.join(ROOT, 'monitor.db'), { onError: (message) => logger.warn(message) });
+} catch (err) {
+  logger.warn(`não consegui abrir monitor.db; métricas desativadas: ${err.message}`);
+  monitor = createDisabledMonitor();
+}
+let gatewayWasReady = false;
+let shuttingDown = false;
+
+function sampleConnection() {
+  if (!monitor.enabled) return;
+  const shards = [...client.ws.shards.values()];
+  const connected = shards.length > 0 && shards.every((shard) => shard.status === Status.Ready);
+  const heartbeatsValid = connected && shards.every((shard) => shard.ping >= 0 && shard.lastPingTimestamp >= 0);
+  monitor.sampleConnection({
+    sampledAt: Date.now(),
+    connected,
+    pingMs: heartbeatsValid ? shards.reduce((sum, shard) => sum + shard.ping, 0) / shards.length : null,
+    heartbeatAt: heartbeatsValid ? Math.min(...shards.map((shard) => shard.lastPingTimestamp)) : null,
+  });
+  refreshConnectionEpisode(shards, Date.now());
+  if (gatewayWasReady && !shuttingDown) {
+    for (const shard of shards) {
+      if (shard.status !== Status.Ready) monitor.openOutage({ shardId: shard.id, cause: 'sample_disconnected' });
+    }
+  }
+}
+
+function refreshConnectionEpisode(shards = [...client.ws.shards.values()], observedAt = Date.now()) {
+  if (!gatewayWasReady || shuttingDown) return;
+  const connected = shards.length > 0 && shards.every((shard) => shard.status === Status.Ready);
+  if (connected) monitor.finishConnectionEpisode({ endedAt: observedAt, reason: 'gateway_ready' });
+  else if (!monitor.startConnectionEpisode({ startedAt: observedAt, cause: 'gateway_unavailable' })) {
+    monitor.advanceConnectionEpisode({ observedAt });
+  }
+}
+
+const monitorSampler = setInterval(sampleConnection, 30_000);
+monitorSampler.unref?.();
+sampleConnection();
+
+client.on('shardReconnecting', (shardId) => {
+  if (gatewayWasReady && !shuttingDown) monitor.openOutage({ shardId, cause: 'reconnecting' });
+  refreshConnectionEpisode();
+});
+client.on('shardDisconnect', (_closeEvent, shardId) => {
+  if (gatewayWasReady && !shuttingDown) monitor.openOutage({ shardId, cause: 'disconnect' });
+  refreshConnectionEpisode();
+});
+client.on('shardReady', (shardId) => {
+  monitor.closeOutage({ shardId, reason: 'ready' });
+  refreshConnectionEpisode();
+});
+client.on('shardResume', (shardId) => {
+  monitor.closeOutage({ shardId, reason: 'resume' });
+  refreshConnectionEpisode();
+});
+
 // Registro global: mudanças podem levar até ~1h para aparecer no autocomplete.
 const COMMANDS = [
   { name: 'reset', description: 'Reinicia a sessão do Claude neste servidor', contexts: [InteractionContextType.Guild] },
   { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
+  { name: 'metrics', description: 'Mostra desconexões e uso de tokens da última semana', contexts: [InteractionContextType.Guild] },
   ...(modelChoices.length > 0 ? [
     {
       name: 'model',
@@ -182,6 +244,9 @@ const COMMANDS = [
 ];
 
 client.once(Events.ClientReady, async (c) => {
+  gatewayWasReady = true;
+  for (const shard of client.ws.shards.values()) monitor.closeOutage({ shardId: shard.id, reason: 'ready' });
+  sampleConnection();
   c.user.setPresence({ status: 'online' });
   logger.info(`conectado como ${c.user.tag}`);
   try {
@@ -266,6 +331,53 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
     }
     await interaction.editReply(`${formatStatus(store.info(key), { ...config.session, queued: queue.size(), waiting: batcher.size() })} ${usage}`);
+    return;
+  }
+
+  if (interaction.commandName === 'metrics') {
+    await interaction.deferReply(ephemeral);
+    const metrics = monitor.readMetrics({ hours: 24, days: 7 });
+    if (!metrics) {
+      await interaction.editReply('Métricas indisponíveis no momento.');
+      return;
+    }
+    const connection = metrics.connection
+      ? `Discord: ${metrics.connection.connected ? 'conectado' : 'desconectado'} · ping ${metrics.connection.ping_ms == null ? 'indisponível' : `${Math.round(metrics.connection.ping_ms)} ms`} · amostra ${formatUtc(metrics.connection.sampled_at)}`
+      : 'Discord: ainda sem amostras';
+    const longest = metrics.longestDisconnection
+      ? `${formatDuration(metrics.longestDisconnection.duration_ms)} (${metrics.longestDisconnection.local_day})`
+      : 'nenhuma';
+    const dailyLines = metrics.daily.map((day) => {
+      const tokensIn = formatAggregate(day.input_tokens_sum, day.input_token_records);
+      const tokensOut = formatAggregate(day.output_tokens_sum, day.output_token_records);
+      const row = `${day.local_day} · ${day.disconnections_count} desconexões · indisponível ${formatDuration(day.disconnected_ms_sum)} · maior trecho ${formatDuration(day.max_contiguous_ms)}\n` +
+        `  tokens entrada/saída: ${tokensIn}/${tokensOut}`;
+      const modelLines = day.models.map((model) =>
+        `  ${model.model} (${model.mode}/${model.backend}): ${formatAggregate(model.input_tokens_sum, model.input_token_records)}/${formatAggregate(model.output_tokens_sum, model.output_token_records)} tokens entrada/saída`);
+      return [row, ...modelLines].join('\n');
+    });
+    const lines = metrics.hourly.map((row) => {
+      const avgMs = row.generation_duration_avg_ms == null ? null : Math.round(row.generation_duration_avg_ms);
+      return `${formatUtcHour(row.hour_start_ms)} · ${row.model} (${row.mode}/${row.backend})\n` +
+        `  tokens entrada/saída: ${formatAggregate(row.input_tokens_sum, row.input_token_records)}/${formatAggregate(row.output_tokens_sum, row.output_token_records)} · mensagens analisadas: ${row.analyzed_messages_count}\n` +
+        `  gerações concluídas: ${row.generations_count} · média: ${avgMs == null ? '—' : `${formatDuration(avgMs)}`} · respostas: ${row.replies_count}`;
+    });
+    for (const row of metrics.tools) {
+      const avgMs = row.duration_avg_ms == null ? null : Math.round(row.duration_avg_ms);
+      lines.push(`${formatUtcHour(row.hour_start_ms)} · ferramenta ${row.tool_name} (${row.model}/${row.mode})\n` +
+        `  chamadas: ${row.calls_count} · média: ${avgMs == null ? '—' : formatDuration(avgMs)} · falhas: ${row.failures_count}`);
+    }
+    if (lines.length === 0) lines.push('Ainda não há buckets horários nesta janela.');
+    const pages = paginateMetrics([
+      connection,
+      `Últimos 7 dias (${metrics.timeZone}) · ${metrics.weeklyDisconnections} desconexões · maior período contínuo: ${longest}`,
+      'Desconexões e tokens por dia (tokens entrada/saída):',
+      ...dailyLines,
+      'Últimas 24 horas · buckets UTC:',
+      ...lines,
+    ]);
+    await interaction.editReply({ content: pages[0], allowedMentions: { parse: [] } });
+    for (const content of pages.slice(1)) await interaction.followUp({ content, allowedMentions: { parse: [] }, ...ephemeral });
     return;
   }
 
@@ -467,6 +579,8 @@ async function attachImages(item, reference, { where, who }) {
       context,
       backend,
       config,
+      monitor,
+      analyzedMessageCount: 1,
       onResult: (r, seconds) => {
         if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
         else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length }, `imagem descrita: ${preview(r.description)}`);
@@ -519,7 +633,12 @@ process.on('unhandledRejection', (err) => logger.error({ err }, 'rejeição não
 // vez de esperar o timeout da conexão que sumiu.
 async function shutdown(signal) {
   logger.info(`sinal ${signal} recebido, desligando`);
+  shuttingDown = true;
+  clearInterval(monitorSampler);
+  monitor.finishConnectionEpisode({ endedAt: Date.now(), reason: 'shutdown' });
+  monitor.closeOpenOutages({ endedAt: Date.now(), reason: 'shutdown' });
   await client.destroy();
+  monitor.close();
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
@@ -595,7 +714,19 @@ async function processBatch(items, run) {
   logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${entry ? choiceName(entry) : (config.model?.[mode] ?? 'padrão do CLI')}`);
   const typing = startTyping(last.channel);
   const started = Date.now();
-  const onEvent = (event) => {
+  const requestedModel = entry?.model ?? config.model?.[mode] ?? null;
+  const generationId = monitor.startGeneration({
+    startedAt: started,
+    backend: backend.name,
+    mode,
+    model: requestedModel,
+    effort: entry ? entry.effort ?? null : config.effort?.[mode] ?? null,
+    analyzedMessageCount: items.length + context.length,
+  });
+  const metricsEvents = createBackendMetricHandler({ monitor, generationId, backendName: backend.name, fallbackModel: requestedModel });
+  let backendSucceeded = false;
+  const onEvent = (event, metadata) => {
+    metricsEvents(event, metadata);
     const activity = backend.describeEvent(event);
     if (!activity) return;
     logger.info(`${backend.name}: ${activity}`);
@@ -606,6 +737,25 @@ async function processBatch(items, run) {
   try {
     const sessionBefore = store.get(key);
     const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length, model: entry?.model, effort: entry?.effort });
+    backendSucceeded = !res.isError;
+    if (!metricsEvents.hasTokenEvents(res.attemptNumber)) {
+      for (const [index, usage] of (res.tokenUsage ?? []).entries()) {
+        monitor.recordTokenUsage({
+          generationId,
+          sourceKey: `${backend.name}:result:${index}`,
+          granularity: 'generation',
+          measuredAt: Date.now(),
+          ...usage,
+          model: usage.model ?? requestedModel,
+        });
+      }
+    }
+    monitor.finishGeneration({
+      id: generationId,
+      finishedAt: Date.now(),
+      modelSucceeded: !res.isError,
+      outcome: res.isError ? 'failed' : isNoReply(res.text) ? 'no_reply' : 'awaiting_reply',
+    });
     if (!fresh && !res.sessionReset && res.sessionId && res.sessionId !== sessionBefore) {
       // O CLI perdeu a sessão e abriu outra só com este lote: o próximo lote
       // precisa levar o contexto completo novamente.
@@ -625,14 +775,23 @@ async function processBatch(items, run) {
       const { replyTo, text } = target ? parseDirective(res.text) : { replyTo: null, text: res.text };
       const replyMessage = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
       logger.info({ ...stats, chars: text.length, respondendoA: replyMessage ? `#${replyTo}` : undefined }, 'enviando para o discord');
-      await send(replyMessage ?? last, text);
-      logger.info('resposta enviada');
+      const sent = await send(replyMessage ?? last, text);
+      if (sent) {
+        monitor.markReplied({ id: generationId });
+        logger.info('resposta enviada');
+      } else {
+        monitor.setGenerationOutcome(generationId, 'delivery_failed');
+      }
     }
   } catch (err) {
     if (err.name === 'AbortError') {
+      if (backendSucceeded) monitor.setGenerationOutcome(generationId, 'delivery_cancelled');
+      else monitor.finishGeneration({ id: generationId, modelSucceeded: false, outcome: 'cancelled' });
       logger.info({ canal: where, segundos: ((Date.now() - started) / 1000).toFixed(1) }, 'geração descartada');
       return;
     }
+    if (backendSucceeded) monitor.setGenerationOutcome(generationId, 'delivery_failed');
+    else monitor.finishGeneration({ id: generationId, modelSucceeded: false, outcome: 'failed' });
     logger.error({ err }, 'falha ao gerar resposta');
     await send(last, `⚠️ ${err.message}`).catch(() => {});
   } finally {
@@ -717,7 +876,7 @@ function startTyping(channel) {
 
 async function send(message, text) {
   const chunks = splitMessage(text);
-  if (chunks.length === 0) return;
+  if (chunks.length === 0) return false;
   const allowedMentions = { parse: ['users'], repliedUser: true }; // nunca @everyone/cargos vindos do texto gerado
   const flags = MessageFlags.SuppressEmbeds;
   try {
@@ -730,6 +889,7 @@ async function send(message, text) {
   for (const chunk of chunks.slice(1)) {
     await message.channel.send({ content: chunk, allowedMentions, flags });
   }
+  return true;
 }
 
 const uniqueBy = (list, keyOf) => [...new Map(list.map((x) => [keyOf(x), x])).values()];
@@ -739,8 +899,55 @@ const roleIds = (member) => (Array.isArray(member?.roles) ? member.roles : [...(
 const oneLine = (text) => (text ?? '').replace(/\s+/g, ' ');
 const preview = (text) => oneLine(text).slice(0, 80);
 
+function formatUtc(timestamp) {
+  return new Date(timestamp).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function formatUtcHour(timestamp) {
+  return new Date(timestamp).toISOString().slice(0, 13).replace('T', ' ') + 'h UTC';
+}
+
+function formatDuration(milliseconds) {
+  if (milliseconds < 1_000) return `${milliseconds} ms`;
+  const totalSeconds = Math.floor(milliseconds / 1_000);
+  if (totalSeconds < 60) return `${(milliseconds / 1_000).toFixed(1)} s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (totalMinutes < 60) return `${totalMinutes}m ${seconds}s`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours < 24) return `${hours}h ${minutes}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function formatAggregate(value, records) {
+  return records > 0 ? String(value) : '—';
+}
+
+function paginateMetrics(lines) {
+  const pages = [];
+  let page = '';
+  for (const source of lines) {
+    const line = source.length > 1_800 ? `${source.slice(0, 1_797)}...` : source;
+    const next = page ? `${page}\n\n${line}` : line;
+    if (next.length > 1_900 && page) {
+      pages.push(page);
+      page = line;
+    } else {
+      page = next;
+    }
+  }
+  if (page) pages.push(page);
+  return pages;
+}
+
 client.login(token).catch((err) => {
   logger.error(`falha no login do Discord: ${err.message}`);
+  shuttingDown = true;
+  clearInterval(monitorSampler);
+  monitor.finishConnectionEpisode({ endedAt: Date.now(), reason: 'shutdown' });
+  monitor.closeOpenOutages({ endedAt: Date.now(), reason: 'shutdown' });
+  monitor.close();
   process.exitCode = 1;
   client.destroy();
 });

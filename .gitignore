@@ -3,6 +3,7 @@ node_modules/
 sessions.json
 models.db*
 user-prompts.db*
+monitor.db*
 logs/
 src/users.js
 imagens/

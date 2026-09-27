@@ -43,7 +43,32 @@ export function parseResult(stdout) {
     numTurns: result.num_turns,
     costUsd: result.total_cost_usd,
     contextTokens: contextTokensOf(result.usage),
+    tokenUsage: usageRecords(result.usage, result.model),
   };
+}
+
+function usageRecords(usage, fallbackModel) {
+  if (!usage || typeof usage !== 'object') return [];
+  const source = Array.isArray(usage.iterations) && usage.iterations.length > 0 ? usage.iterations : [usage];
+  const records = source
+    .map((item) => {
+      const input = item.input_tokens;
+      const output = item.output_tokens;
+      const cacheRead = item.cache_read_input_tokens;
+      const cacheCreation = item.cache_creation_input_tokens;
+      const known = [input, output, cacheRead, cacheCreation].some((value) => value != null);
+      if (!known) return null;
+      return {
+        model: item.model ?? fallbackModel ?? null,
+        inputTokens: [input, cacheRead, cacheCreation].some((value) => value != null)
+          ? Number(input ?? 0) + Number(cacheRead ?? 0) + Number(cacheCreation ?? 0)
+          : null,
+        outputTokens: output == null ? null : Number(output),
+        cacheReadInputTokens: cacheRead == null ? null : Number(cacheRead),
+        cacheCreationInputTokens: cacheCreation == null ? null : Number(cacheCreation),
+      };
+    }).filter(Boolean);
+  return records;
 }
 
 // Tamanho do contexto na última chamada à API (input + cache), que é o que

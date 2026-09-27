@@ -49,7 +49,13 @@ export function parseResult(stdout) {
   if (!result) throw new Error(`saída do command-code sem resultado: ${stdout.slice(0, 500)}`);
   if (result.subtype === 'error') throw new Error(result.error || 'command-code retornou erro');
   const lastRequest = events.findLast((e) => e.type === 'event' && e.event?.type === 'model_request_end');
+  const requests = events.filter((e) => e.type === 'event' && e.event?.type === 'model_request_end');
   const runEnd = events.findLast((e) => e.type === 'event' && e.event?.type === 'run_end');
+  const tokenUsage = requests.map((item) => usageRecord(item.event.model, item.event.usage)).filter(Boolean);
+  if (tokenUsage.length === 0 && result.usage) {
+    const totalUsage = usageRecord(undefined, result.usage);
+    if (totalUsage) tokenUsage.push(totalUsage);
+  }
   return {
     text: result.finalText ?? '',
     sessionId: result.sessionId,
@@ -57,8 +63,26 @@ export function parseResult(stdout) {
     subtype: result.subtype,
     numTurns: runEnd?.event.result?.turnCount,
     costUsd: undefined,
+    tokenUsage,
     // inputTokens já inclui o que veio do cache: é o contexto que a próxima rodada reenvia
     contextTokens: lastRequest?.event.usage?.inputTokens ?? 0,
+  };
+}
+
+function usageRecord(model, usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const input = usage.inputTokens ?? usage.input_tokens;
+  const output = usage.outputTokens ?? usage.output_tokens;
+  const cacheRead = usage.cacheReadTokens ?? usage.cache_read_input_tokens;
+  const cacheCreation = usage.cacheWriteTokens ?? usage.cache_creation_input_tokens;
+  if ([input, output, cacheRead, cacheCreation].every((value) => value == null)) return null;
+  // Command Code reports inputTokens with cache already included.
+  return {
+    model: model ?? usage.model ?? null,
+    inputTokens: input == null ? (cacheRead == null && cacheCreation == null ? null : Number(cacheRead ?? 0) + Number(cacheCreation ?? 0)) : Number(input),
+    outputTokens: output == null ? null : Number(output),
+    cacheReadInputTokens: cacheRead == null ? null : Number(cacheRead),
+    cacheCreationInputTokens: cacheCreation == null ? null : Number(cacheCreation),
   };
 }
 

@@ -205,8 +205,10 @@ export async function askClaude({ key, mode, prompt, store, config, backend = cl
   const cwd = mode === 'full' ? config.workDir : config.webDir;
   const sessionReset = config.session ? sessionResetReason(store.info?.(key), config.session, now) : null;
   if (sessionReset) store.clear(key);
-  const run = (sessionId) =>
-    runner({
+  let attempt = 0;
+  const run = (sessionId) => {
+    const attemptNumber = ++attempt;
+    return runner({
       ...backend.buildRequest({
         mode,
         sessionId,
@@ -220,9 +222,10 @@ export async function askClaude({ key, mode, prompt, store, config, backend = cl
       cwd,
       bin: config.bin,
       timeoutMs: config.timeoutMs,
-      onEvent,
+      onEvent: onEvent ? (event) => onEvent(event, { attempt: attemptNumber }) : undefined,
       signal,
     });
+  };
 
   const sessionId = store.get(key);
   let result;
@@ -238,5 +241,5 @@ export async function askClaude({ key, mode, prompt, store, config, backend = cl
     store.set(key, result.sessionId);
     store.touch?.(key, messageCount, now, result.contextTokens);
   }
-  return { ...result, sessionReset };
+  return { ...result, sessionReset, attemptNumber: attempt };
 }

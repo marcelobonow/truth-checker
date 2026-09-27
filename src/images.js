@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createBackendMetricHandler } from './monitor-events.js';
 
 // Imagens que o bot analisa (ver docs/superpowers/specs/2026-09-18-analise-imagem-design.md):
 // só quando quem está na whitelist marca o bot explicitamente, anexadas à
@@ -88,7 +89,7 @@ export async function download({ url }, { dir, fileName, maxBytes, fetchImpl = f
 // escreveu junto, para a descrição focar nisso; `context`: mensagens recentes
 // do canal ({ authorName, content }, mais antiga primeiro), para o analisador
 // entender do que estão falando. Apaga o arquivo ao terminar.
-export async function describeImage({ file, hint = '', context = [], backend, config, signal }) {
+export async function describeImage({ file, hint = '', context = [], backend, config, signal, monitor = null, analyzedMessageCount = 1 }) {
   const dir = path.dirname(file);
   const parts = [];
   if (context.length > 0) {
@@ -99,6 +100,19 @@ export async function describeImage({ file, hint = '', context = [], backend, co
   if (hint.trim()) parts.push(`O autor escreveu junto com a imagem: "${hint.trim()}". Comece respondendo a isso, com o máximo de detalhes que a imagem permite, e depois descreva tudo o mais.`);
   parts.push(`Descreva a imagem em ${file}, de forma longa e minuciosa, seguindo as seções do seu prompt.`);
   const prompt = parts.join('\n');
+  const startedAt = Date.now();
+  const model = config.model?.vision ?? config.model?.web ?? null;
+  const generationId = monitor?.startGeneration({
+    startedAt,
+    backend: backend.name,
+    mode: 'vision',
+    model,
+    effort: config.effort?.vision ?? config.effort?.web ?? null,
+    analyzedMessageCount,
+  });
+  const metricsEvents = monitor && generationId != null
+    ? createBackendMetricHandler({ monitor, generationId, backendName: backend.name, fallbackModel: model })
+    : null;
   try {
     const res = await backend.run({
       ...backend.buildRequest({
@@ -112,12 +126,29 @@ export async function describeImage({ file, hint = '', context = [], backend, co
       bin: config.bin,
       timeoutMs: config.images.timeoutMs,
       signal,
+      onEvent: metricsEvents ? (event) => metricsEvents(event, { attempt: 1 }) : undefined,
     });
+    if (metricsEvents && !metricsEvents.hasTokenEvents()) {
+      for (const [index, usage] of (res.tokenUsage ?? []).entries()) {
+        monitor.recordTokenUsage({
+          generationId,
+          sourceKey: `${backend.name}:vision-result:${index}`,
+          granularity: 'generation',
+          measuredAt: Date.now(),
+          ...usage,
+          model: usage.model ?? model,
+        });
+      }
+    }
     const text = (res.text ?? '').trim();
     if (res.isError) throw new Error(`${res.subtype ?? 'erro'}: ${text.slice(0, 200)}`);
     if (/^ERRO:/i.test(text)) throw new Error(text.replace(/^ERRO:\s*/i, ''));
     if (!text) throw new Error('descrição vazia');
+    monitor?.finishGeneration({ id: generationId, finishedAt: Date.now(), modelSucceeded: true, outcome: 'vision_complete' });
     return text.slice(0, config.images.maxChars);
+  } catch (err) {
+    monitor?.finishGeneration({ id: generationId, finishedAt: Date.now(), modelSucceeded: false, outcome: err.name === 'AbortError' ? 'cancelled' : 'failed' });
+    throw err;
   } finally {
     fs.rmSync(file, { force: true });
   }
@@ -126,14 +157,14 @@ export async function describeImage({ file, hint = '', context = [], backend, co
 // Baixa e descreve cada imagem, em sequência. Devolve um resultado por imagem:
 // { source, name, description } ou { source, name, error } (o modelo fica
 // sabendo que havia uma imagem que não deu para ler).
-export async function analyzeImages(images, { dir, fileBase, hint, context, backend, config, fetchImpl, onResult = () => { } }) {
+export async function analyzeImages(images, { dir, fileBase, hint, context, backend, config, fetchImpl, monitor = null, analyzedMessageCount = 1, onResult = () => { } }) {
   const results = [];
   for (const [i, image] of images.entries()) {
     const started = Date.now();
     let result;
     try {
       const file = await download(image, { dir, fileName: `${fileBase}-${i + 1}`, maxBytes: config.images.maxBytes, fetchImpl });
-      const description = await describeImage({ file, hint, context, backend, config });
+      const description = await describeImage({ file, hint, context, backend, config, monitor, analyzedMessageCount: analyzedMessageCount + context.length });
       result = { source: image.source, name: image.name, description };
     } catch (err) {
       result = { source: image.source, name: image.name, error: err.message };
