@@ -21,10 +21,16 @@ export function createSessionStore(filePath, { onError = console.error } = {}) {
 
   return {
     get: (key) => sessions[key]?.id,
-    info: (key) => sessions[key],
+    info: (key) => {
+      const entry = sessions[key];
+      if (!entry) return undefined;
+      const { startedAt, ...info } = entry;
+      return info;
+    },
+    startedAt: (key) => sessions[key]?.startedAt ?? 0,
     set(key, id) {
       if (sessions[key]?.id === id) return;
-      sessions[key] = { id, messages: 0, lastUsed: Date.now(), contextTokens: 0 };
+      sessions[key] = { id, messages: 0, lastUsed: Date.now(), contextTokens: 0, startedAt: Date.now() };
       save();
     },
     touch(key, addedMessages, now = Date.now(), contextTokens) {

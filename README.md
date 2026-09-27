@@ -64,7 +64,8 @@ já feito nesta máquina (sem API key). Design completo em
   full; apague o texto e envie para remover o prompt. `/prompt-list` mostra quem
   configurou um prompt e os primeiros 25 caracteres de cada um. Os prompts ficam
   em `user-prompts.db` (SQLite); os comandos usam a mesma whitelist/cargos de
-  `/model`.
+  `/model`. Ao mudar ou remover o prompt, a próxima resposta inicia uma nova
+  sessão no servidor para deixar a preferência anterior fora do histórico.
 
 ## Requisitos
 

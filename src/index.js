@@ -225,8 +225,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: `O prompt deve ter entre 1 e ${MAX_USER_PROMPT_LENGTH} caracteres.`, ...ephemeral });
       return;
     }
-    const saved = prompt ? userPromptStore.set(interaction.user.id, prompt) : userPromptStore.clear(interaction.user.id);
-    await interaction.reply({ content: saved ? (prompt ? 'Prompt personalizado salvo.' : 'Prompt personalizado removido.') : '⚠️ Não consegui salvar seu prompt.', ...ephemeral });
+    // Serializa a mudança com as gerações: uma execução antiga não pode salvar
+    // uma sessão depois da mudança e fazê-la parecer nova.
+    await interaction.deferReply(ephemeral);
+    const { saved, changed } = await queue.add(() => {
+      if (userPromptStore.get(interaction.user.id) === (prompt || undefined)) return { saved: true, changed: false };
+      const saved = prompt ? userPromptStore.set(interaction.user.id, prompt) : userPromptStore.clear(interaction.user.id);
+      return { saved, changed: saved };
+    });
+    await interaction.editReply(!saved ? '⚠️ Não consegui salvar seu prompt.'
+      : !changed ? 'Prompt personalizado mantido.'
+        : prompt ? 'Prompt personalizado salvo. A próxima resposta começará uma nova sessão.'
+          : 'Prompt personalizado removido. A próxima resposta começará uma nova sessão.');
     return;
   }
   if (!interaction.isChatInputCommand()) return;
@@ -523,7 +533,12 @@ async function processBatch(items, run) {
   const mode = resolveMode({ guildId: last.guildId, authorId: last.author.id }, config);
   const key = sessionKey({ guildId: last.guildId, isTarget: target, mode });
   const where = `${last.guild.name} #${last.channel.name}`;
-  const userPrompt = userPromptStore.get(last.author.id);
+  const { prompt: userPrompt, updatedAt: promptUpdatedAt } = userPromptStore.getState(last.author.id);
+  if (store.get(key) && promptUpdatedAt != null && promptUpdatedAt >= store.startedAt(key)) {
+    store.clear(key);
+    clearContextMarkers(key);
+    logger.info({ canal: where, autor: displayName(last) }, 'sessão reiniciada após mudança do prompt personalizado');
+  }
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
   const mentions = target ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
   const now = Date.now();

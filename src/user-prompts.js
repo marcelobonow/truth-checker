@@ -10,9 +10,8 @@ export function createUserPromptStore(filePath, { onError = console.error } = {}
     updated_at INTEGER NOT NULL
   )`);
   const upsert = db.prepare('INSERT INTO user_prompts (user_id, prompt, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET prompt = excluded.prompt, updated_at = excluded.updated_at');
-  const remove = db.prepare('DELETE FROM user_prompts WHERE user_id = ?');
-  const selectOne = db.prepare('SELECT prompt FROM user_prompts WHERE user_id = ?');
-  const selectAll = db.prepare('SELECT user_id, prompt FROM user_prompts ORDER BY updated_at DESC, user_id');
+  const selectOne = db.prepare('SELECT prompt, updated_at FROM user_prompts WHERE user_id = ?');
+  const selectAll = db.prepare("SELECT user_id, prompt FROM user_prompts WHERE prompt <> '' ORDER BY updated_at DESC, user_id");
   const guard = (fn, fallback) => {
     try {
       return fn();
@@ -23,12 +22,23 @@ export function createUserPromptStore(filePath, { onError = console.error } = {}
   };
 
   return {
-    get: (userId) => guard(() => selectOne.get(userId)?.prompt, undefined),
+    get: (userId) => guard(() => selectOne.get(userId)?.prompt || undefined, undefined),
+    getState: (userId) => guard(() => {
+      const row = selectOne.get(userId);
+      return { prompt: row?.prompt || undefined, updatedAt: row?.updated_at };
+    }, { prompt: undefined, updatedAt: undefined }),
     set: (userId, prompt, now = Date.now()) => {
       if (typeof prompt !== 'string' || !prompt.trim() || Array.from(prompt).length > MAX_USER_PROMPT_LENGTH) return false;
-      return guard(() => { upsert.run(userId, prompt, now); return true; }, false);
+      return guard(() => {
+        if (selectOne.get(userId)?.prompt !== prompt) upsert.run(userId, prompt, now);
+        return true;
+      }, false);
     },
-    clear: (userId) => guard(() => { remove.run(userId); return true; }, false),
+    // Guarda a data da remoção para invalidar sessões antigas após reinícios.
+    clear: (userId, now = Date.now()) => guard(() => {
+      if (selectOne.get(userId)?.prompt) upsert.run(userId, '', now);
+      return true;
+    }, false),
     list: () => guard(() => selectAll.all().map((row) => ({ userId: row.user_id, prompt: row.prompt })), []),
   };
 }
