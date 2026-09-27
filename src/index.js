@@ -583,7 +583,7 @@ async function attachImages(item, reference, { where, who }) {
       analyzedMessageCount: 1,
       onResult: (r, seconds) => {
         if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
-        else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length }, `imagem descrita: ${preview(r.description)}`);
+        else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length, resultado: r.description }, 'imagem descrita');
       },
     });
   } finally {
@@ -602,8 +602,9 @@ async function attachFiles(item, reference, { where, who }) {
     isTarget: item.target,
     limits: config.files,
   });
-  for (const file of rejected) logger.info({ canal: where, autor: who }, `arquivo ignorado: ${file.name} (${file.reason})`);
-  const unavailable = rejectedNonImages(rejected).map((file) => ({ ...file, error: file.reason }));
+  const unavailableFiles = rejectedNonImages(rejected);
+  for (const file of unavailableFiles) logger.info({ canal: where, autor: who }, `arquivo ignorado: ${file.name} (${file.reason})`);
+  const unavailable = unavailableFiles.map((file) => ({ ...file, error: file.reason }));
   if (files.length === 0) {
     item.files = unavailable;
     return;
