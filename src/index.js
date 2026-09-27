@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, InteractionContextType, MessageFlags } from 'discord.js';
+import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, InteractionContextType, LabelBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
 import { createSessionStore } from './sessions.js';
 import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
@@ -20,6 +20,8 @@ import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTI
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
+const PROMPT_MODAL_ID = 'user-prompt-editor';
+const PROMPT_INPUT_ID = 'prompt-text';
 
 const list = (value) => (value ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 function fatal(err) {
@@ -173,15 +175,8 @@ const COMMANDS = [
   ] : []),
   {
     name: 'prompt',
-    description: 'Define ou remove seu prompt personalizado',
+    description: 'Abre o editor do seu prompt personalizado',
     contexts: [InteractionContextType.Guild],
-    options: [{
-      type: ApplicationCommandOptionType.String,
-      name: 'texto',
-      description: 'Seu prompt (até 2000 caracteres); deixe vazio para remover',
-      required: false,
-      max_length: MAX_USER_PROMPT_LENGTH,
-    }],
   },
   { name: 'prompt-list', description: 'Lista quem definiu um prompt personalizado', contexts: [InteractionContextType.Guild] },
 ];
@@ -218,6 +213,22 @@ client.once(Events.ClientReady, async (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId !== PROMPT_MODAL_ID) return;
+    const ephemeral = { flags: MessageFlags.Ephemeral };
+    if (!isTarget({ authorId: interaction.user.id, roleIds: roleIds(interaction.member) }, config)) {
+      await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
+      return;
+    }
+    const prompt = interaction.fields.getTextInputValue(PROMPT_INPUT_ID);
+    if (prompt && (!prompt.trim() || Array.from(prompt).length > MAX_USER_PROMPT_LENGTH)) {
+      await interaction.reply({ content: `O prompt deve ter entre 1 e ${MAX_USER_PROMPT_LENGTH} caracteres.`, ...ephemeral });
+      return;
+    }
+    const saved = prompt ? userPromptStore.set(interaction.user.id, prompt) : userPromptStore.clear(interaction.user.id);
+    await interaction.reply({ content: saved ? (prompt ? 'Prompt personalizado salvo.' : 'Prompt personalizado removido.') : '⚠️ Não consegui salvar seu prompt.', ...ephemeral });
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
   const ephemeral = { flags: MessageFlags.Ephemeral };
   const where = `${interaction.guild.name} #${interaction.channel?.name}`;
@@ -289,13 +300,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   if (interaction.commandName === 'prompt') {
-    const prompt = interaction.options.getString('texto');
-    if (prompt !== null && (!prompt.trim() || Array.from(prompt).length > MAX_USER_PROMPT_LENGTH)) {
-      await interaction.reply({ content: `O prompt deve ter entre 1 e ${MAX_USER_PROMPT_LENGTH} caracteres.`, ...ephemeral });
-      return;
-    }
-    const saved = prompt === null ? userPromptStore.clear(interaction.user.id) : userPromptStore.set(interaction.user.id, prompt);
-    await interaction.reply({ content: saved ? (prompt === null ? 'Prompt personalizado removido.' : 'Prompt personalizado salvo.') : '⚠️ Não consegui salvar seu prompt.', ...ephemeral });
+    const input = new TextInputBuilder()
+      .setCustomId(PROMPT_INPUT_ID)
+      .setStyle(TextInputStyle.Paragraph)
+      .setMaxLength(MAX_USER_PROMPT_LENGTH)
+      .setRequired(false)
+      .setPlaceholder('Escreva seu prompt; deixe vazio para remover');
+    const currentPrompt = userPromptStore.get(interaction.user.id);
+    if (currentPrompt) input.setValue(currentPrompt);
+    const modal = new ModalBuilder()
+      .setCustomId(PROMPT_MODAL_ID)
+      .setTitle('Seu prompt personalizado')
+      .addLabelComponents(new LabelBuilder()
+        .setLabel('Prompt personalizado')
+        .setDescription(`Até ${MAX_USER_PROMPT_LENGTH} caracteres. Apague o texto para remover.`)
+        .setTextInputComponent(input));
+    await interaction.showModal(modal);
     return;
   }
 
