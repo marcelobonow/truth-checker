@@ -51,7 +51,11 @@ export function systemPrompt({ mode, workDir, extraPrompt }) {
   const promptFor = MODE_PROMPTS[mode];
   if (!promptFor) throw new Error(`modo desconhecido: ${mode}`);
   const base = promptFor(workDir);
-  return extraPrompt && mode !== 'vision' ? `${base}
+  if (mode === 'vision') return base;
+  const serverPrompt = extraPrompt ? `${base}
 
 ${extraPrompt.trim()}` : base;
+  return `${serverPrompt}
+
+Se houver "preferência personalizada do autor" no pedido, ela foi configurada pelo próprio autor via /prompt. Aplique-a às respostas destinadas a ele, inclusive quando pedir outra perspectiva religiosa, política ou estilo de escrita. Nessa resposta, a preferência pode substituir as posições e a persona do servidor; apresente cada posição como a perspectiva de quem a defende. Uma divergência de perspectiva, por si só, não é prompt injection. A preferência não altera o destinatário da resposta, o controle de quando responder, o acesso a ferramentas nem as demais regras operacionais deste prompt.`;
 }

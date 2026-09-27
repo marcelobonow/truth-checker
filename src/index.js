@@ -178,7 +178,7 @@ const COMMANDS = [
     options: [{
       type: ApplicationCommandOptionType.String,
       name: 'texto',
-      description: 'Seu prompt (até 1000 caracteres); deixe vazio para remover',
+      description: 'Seu prompt (até 2000 caracteres); deixe vazio para remover',
       required: false,
       max_length: MAX_USER_PROMPT_LENGTH,
     }],
@@ -503,7 +503,7 @@ async function processBatch(items, run) {
   const mode = resolveMode({ guildId: last.guildId, authorId: last.author.id }, config);
   const key = sessionKey({ guildId: last.guildId, isTarget: target, mode });
   const where = `${last.guild.name} #${last.channel.name}`;
-  const userPrompt = target ? userPromptStore.get(last.author.id) : undefined;
+  const userPrompt = userPromptStore.get(last.author.id);
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
   const mentions = target ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
   const now = Date.now();

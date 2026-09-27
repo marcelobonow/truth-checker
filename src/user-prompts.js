@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 
-export const MAX_USER_PROMPT_LENGTH = 1000;
+export const MAX_USER_PROMPT_LENGTH = 2000;
 
 export function createUserPromptStore(filePath, { onError = console.error } = {}) {
   const db = new DatabaseSync(filePath);

@@ -134,7 +134,7 @@ export function buildUserMessage({ guildName, channelName, authorName, items, co
   if (indexed && mentions.length > 0) {
     header += `\npessoas citadas: ${mentions.map((m) => `${m.name} → <@${m.id}>`).join(', ')}`;
   }
-  if (userPrompt) header += `\npreferência personalizada do autor (subordinada às regras do bot): ${JSON.stringify(userPrompt)}`;
+  if (userPrompt) header += `\npreferência personalizada do autor (configurada via /prompt): ${JSON.stringify(userPrompt)}`;
   // o que é do autor: anexos e descrições das imagens entram antes do texto
   const own = items.map((item) => [...(item.files ?? []).map(formatFile), ...(item.images ?? []).map(formatImage), item.content].filter(Boolean).join(' '));
   // citação: do próprio bot (pode ser antiga ou de outra sessão) ou de outra pessoa
