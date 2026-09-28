@@ -11,7 +11,8 @@ export { TARGET_USER_IDS } from './users.js';
 // modo web: o full é só para os ids acima. Dá para liberar alguém só dando o
 // cargo, sem reiniciar o bot.
 export const TARGET_ROLE_IDS = [
-  "1550716105775910932"
+  "1550716105775910932",
+  "1554255764229718080",
 ];
 
 // Servidores onde os usuários acima têm acesso total à máquina (modo full).
@@ -72,7 +73,7 @@ export const CONTEXT = {
 export const IMAGES = {
   max: 2, // imagens por mensagem (anexos + links + citada); as demais são ignoradas com log
   maxBytes: 8_000_000,
-  maxChars: 12_000, // corte da descrição (o prompt de visão mira em ~10000 chars)
+  maxChars: 12_000, // limite máximo da descrição; não é uma meta de tamanho
   timeoutMs: 90_000, // por imagem
 };
 

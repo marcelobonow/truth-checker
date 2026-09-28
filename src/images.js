@@ -96,9 +96,10 @@ export async function describeImage({ file, hint = '', context = [], backend, co
     parts.push('Contexto recente do canal do Discord onde a imagem foi mandada (mais antigo primeiro), só para você entender do que estão falando:');
     parts.push(...context.map((m) => `- ${m.authorName}: ${m.content}`));
   }
-  // a pergunta do autor vem antes do pedido: é o que a descrição precisa responder
-  if (hint.trim()) parts.push(`O autor escreveu junto com a imagem: "${hint.trim()}". Comece respondendo a isso, com o máximo de detalhes que a imagem permite, e depois descreva tudo o mais.`);
-  parts.push(`Descreva a imagem em ${file}, de forma longa e minuciosa, seguindo as seções do seu prompt.`);
+  // O texto do autor orienta quais detalhes visuais priorizar, mas a chamada
+  // de visão não responde à pergunta nem avalia a imagem.
+  if (hint.trim()) parts.push(`O autor escreveu junto com a imagem: "${hint.trim()}". Use isso apenas para priorizar os detalhes visuais mais relevantes. Não responda à pergunta nem dê opinião; descreva a imagem e acrescente contexto factual reconhecível conforme as instruções.`);
+  parts.push(`Descreva a imagem em ${file} com detalhe e sem repetição, seguindo as instruções do seu prompt.`);
   const prompt = parts.join('\n');
   const startedAt = Date.now();
   const model = config.model?.vision ?? config.model?.web ?? null;

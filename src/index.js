@@ -78,6 +78,7 @@ const config = {
   targetRoleIds: TARGET_ROLE_IDS.map(String),
   fullAccessGuildIds: FULL_ACCESS_GUILD_IDS.map(String),
   watchChannelIds: list(env.WATCH_CHANNEL_IDS),
+  respondToBotIds: list(env.RESPOND_TO_BOT_IDS),
   mentionAnyone: Boolean(MENTION_ANYONE),
   mentionsAndRepliesOnly: Boolean(MENTIONS_AND_REPLIES_ONLY),
   workDir: env.WORK_DIR || ROOT,
@@ -217,6 +218,15 @@ const COMMANDS = [
   { name: 'reset', description: 'Reinicia a sessão do Claude neste servidor', contexts: [InteractionContextType.Guild] },
   { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
   { name: 'metrics', description: 'Mostra desconexões e uso de tokens da última semana', contexts: [InteractionContextType.Guild] },
+  {
+    name: 'id',
+    description: 'Mostra o ID de um usuário ou cargo',
+    contexts: [InteractionContextType.Guild],
+    options: [
+      { type: ApplicationCommandOptionType.User, name: 'usuario', description: 'Usuário para consultar', required: false },
+      { type: ApplicationCommandOptionType.Role, name: 'cargo', description: 'Cargo para consultar', required: false },
+    ],
+  },
   ...(modelChoices.length > 0 ? [
     {
       name: 'model',
@@ -311,6 +321,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (!isTarget({ authorId: interaction.user.id, roleIds: roleIds(interaction.member) }, config)) {
     logger.info({ canal: where, autor: who }, `/${interaction.commandName} recusado: fora da whitelist`);
     await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
+    return;
+  }
+  if (interaction.commandName === 'id') {
+    const user = interaction.options.getUser('usuario');
+    const role = interaction.options.getRole('cargo');
+    if (Boolean(user) === Boolean(role)) {
+      await interaction.reply({ content: 'Informe exatamente uma opção: `usuario` ou `cargo`.', ...ephemeral });
+      return;
+    }
+    const result = user
+      ? `ID do usuário ${user.username}: \`${user.id}\``
+      : `ID do cargo ${role.name}: \`${role.id}\``;
+    await interaction.reply({ content: result, ...ephemeral });
     return;
   }
   const mode = resolveMode({ guildId: interaction.guildId, authorId: interaction.user.id }, config);
@@ -490,7 +513,8 @@ client.on(Events.MessageCreate, async (message) => {
   let referenceResolved = false;
   // Modo estrito: uma menção passa de imediato. Sem ela, só um reply à nossa
   // própria mensagem passa; a referência é buscada apenas para confirmar isso.
-  if (config.mentionsAndRepliesOnly && !mentionsBot) {
+  const allowedBot = message.author.bot && config.respondToBotIds.includes(message.author.id);
+  if (config.mentionsAndRepliesOnly && !mentionsBot && !allowedBot) {
     if (!message.reference?.messageId) {
       logger.info({ canal: where, autor: who }, `não analisando (MENTIONS_AND_REPLIES_ONLY): sem menção nem reply: ${oneLine(message.cleanContent)}`);
       return;

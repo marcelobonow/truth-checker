@@ -20,9 +20,11 @@ export function isTarget({ authorId, roleIds = [] }, config) {
 // Por que a mensagem não será analisada (texto para o log), ou null se for.
 export function skipReason(meta, config) {
   const { isBot, guildId, channelId, mentionsBot } = meta;
-  if (isBot) return 'autor é bot';
+  const allowedBot = isBot && (config.respondToBotIds ?? []).includes(meta.authorId);
+  if (isBot && !allowedBot) return 'autor é bot';
   if (!guildId) return 'fora de servidor (DM)';
   if (config.watchChannelIds.length > 0 && !config.watchChannelIds.includes(channelId)) return 'canal fora de WATCH_CHANNEL_IDS';
+  if (allowedBot) return null;
   if (isTarget(meta, config)) return null;
   if (!mentionsBot) return 'usuário fora da whitelist e sem menção ao bot';
   return config.mentionAnyone ? null : 'usuário fora da whitelist (MENTION_ANYONE desligado)';

@@ -52,6 +52,8 @@ já feito nesta máquina (sem API key). Design completo em
   sessão passa de 400 mensagens enviadas ao Claude ou fica 1 h sem uso
   (`SESSION` em `src/settings.js`). Com `RESET_ON_START = true` (padrão), reiniciar
   o bot também limpa todas as sessões.
+- `/id usuario:<usuário>` ou `/id cargo:<cargo>` mostra o ID selecionado em uma
+  resposta privada. É restrito à mesma whitelist de usuários e cargos.
 - Modelo por usuário: `/model modelo:<nome>` escolhe o modelo usado nas
   respostas para você, entre os de `MODEL_CHOICES`
   (`src/settings.<backend>.js`; lista vazia desliga os comandos). A escolha fica
