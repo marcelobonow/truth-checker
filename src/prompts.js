@@ -1,5 +1,5 @@
-// Textos enviados aos modelos, iguais para qualquer backend (claude.js,
-// commandcode.js). Cada backend decide como entregá-los ao CLI.
+// Textos enviados aos modelos, iguais para qualquer backend. Cada backend
+// decide como entregá-los ao CLI.
 
 export const NO_REPLY = 'NO_REPLY';
 

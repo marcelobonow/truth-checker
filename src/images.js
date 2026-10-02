@@ -119,6 +119,7 @@ export async function describeImage({ file, hint = '', context = [], backend, co
       ...backend.buildRequest({
         mode: 'vision',
         workDir: dir,
+        imageFile: file,
         model: config.model?.vision ?? config.model?.web,
         effort: config.effort?.vision ?? config.effort?.web,
         prompt,

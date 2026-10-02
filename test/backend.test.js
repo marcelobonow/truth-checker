@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { selectBackend } from '../src/backend.js';
 import * as claude from '../src/claude.js';
 import * as commandcode from '../src/commandcode.js';
+import * as codex from '../src/codex.js';
 
 test('selectBackend devolve o módulo do backend e o settings de modelos correspondente', async () => {
   const c = await selectBackend('claude');
@@ -12,14 +13,18 @@ test('selectBackend devolve o módulo do backend e o settings de modelos corresp
   assert.equal(cc.backend, commandcode);
   assert.match(cc.settings.MODEL.web, /mimo|deepseek/);
   assert.ok(cc.settings.WEB_MAX_TURNS >= 4);
+  const cx = await selectBackend('codex');
+  assert.equal(cx.backend, codex);
+  assert.equal(cx.settings.MODEL.web, 'gpt-6-luna');
+  assert.deepEqual(cx.settings.MODEL_CHOICES.map((entry) => entry.model), ['gpt-6-luna']);
 });
 
 test('selectBackend: nome inválido lista os válidos', async () => {
-  await assert.rejects(selectBackend('codex'), /claude.*commandcode/);
+  await assert.rejects(selectBackend('inexistente'), /claude.*commandcode.*codex/);
 });
 
-test('os dois settings de backend exportam a mesma forma', async () => {
-  for (const name of ['claude', 'commandcode']) {
+test('todos os settings de backend exportam a mesma forma', async () => {
+  for (const name of ['claude', 'commandcode', 'codex']) {
     const { settings } = await selectBackend(name);
     assert.deepEqual(Object.keys(settings).sort(), ['EFFORT', 'MODEL', 'MODEL_CHOICES', 'WEB_MAX_TURNS']);
     assert.ok('web' in settings.MODEL && 'full' in settings.MODEL);

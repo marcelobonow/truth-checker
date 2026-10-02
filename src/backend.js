@@ -4,6 +4,7 @@
 const BACKENDS = {
   claude: { module: './claude.js', settings: './settings.claude.js' },
   commandcode: { module: './commandcode.js', settings: './settings.commandcode.js' },
+  codex: { module: './codex.js', settings: './settings.codex.js' },
 };
 
 export async function selectBackend(name) {

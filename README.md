@@ -1,16 +1,16 @@
-# Ponte Discord → Claude Code
+# Ponte Discord → assistentes CLI
 
-Bot do Discord que atende uma whitelist de usuários e encaminha as mensagens deles ao
-Claude Code em modo headless (`claude -p`), usando o login do plano claude.ai
-já feito nesta máquina (sem API key). Design completo em
+Bot do Discord que atende uma whitelist de usuários e encaminha as mensagens
+deles a um CLI de IA em modo headless. Escolha Claude Code, Command Code ou
+Codex em `src/settings.js`. Design original em
 [docs/superpowers/specs/2026-09-17-discord-claude-bridge-design.md](docs/superpowers/specs/2026-09-17-discord-claude-bridge-design.md).
 
 ## Comportamento
 
 - Só mensagens dos usuários em `TARGET_USER_IDS` ([src/users.js](src/users.example.js), ignorado pelo git) ou com um cargo de `TARGET_ROLE_IDS` (`src/settings.js`; sempre modo web), em servidores (DMs e bots ignorados). O cargo vale na hora: dá para liberar alguém sem reiniciar o bot.
-- Servidores em `FULL_ACCESS_GUILD_IDS` (`src/settings.js`): Claude com **todas as ferramentas e
-  sem pedir permissão** (programação remota no `WORK_DIR`). Qualquer outro
-  servidor: só conversa + WebSearch/WebFetch.
+- Servidores em `FULL_ACCESS_GUILD_IDS` (`src/settings.js`): backend ativo com
+  acesso completo no `WORK_DIR`. Qualquer outro servidor fica no modo web, sem
+  ferramentas locais.
 - Com `MENTIONS_AND_REPLIES_ONLY = true` em `src/settings.js`, o bot só
   encaminha menções `@bot` (real ou "@Nome" escrito) e replies a mensagens
   dele. Qualquer outra mensagem, inclusive perguntas soltas, é ignorada sem
@@ -71,8 +71,8 @@ já feito nesta máquina (sem API key). Design completo em
 
 ## Requisitos
 
-- Node 22.9+ (testado com 24) e Claude Code instalado e logado (`claude` no PATH),
-  ou Command Code (veja [Usar o Command Code](#usar-o-command-code)).
+- Node 22.9+ (testado com 24) e o CLI escolhido instalado e autenticado:
+  Claude Code (`claude`), Command Code ou Codex (`codex`) no PATH.
 - Bot criado no [Discord Developer Portal](https://discord.com/developers/applications):
   1. **New Application** → aba **Bot** → **Reset Token** → copie o token.
   2. Em **Privileged Gateway Intents**, ligue **Message Content Intent**.
@@ -88,15 +88,15 @@ já feito nesta máquina (sem API key). Design completo em
 npm install
 copy .env.example .env      # preencha DISCORD_TOKEN (e WORK_DIR)
 copy src\users.example.js src\users.js   # TARGET_USER_IDS (fica fora do git)
-notepad src\settings.js     # FULL_ACCESS_GUILD_IDS, BACKEND, JUDGE
-notepad src\settings.claude.js   # MODEL, EFFORT (settings.commandcode.js para o Command Code)
-notepad prompt.web.md       # persona/premissas do modo web; prompt.full.md para o modo full
-                            # (prompt.web.commandcode.md vale só para o Command Code)
+notepad src\settings.js          # FULL_ACCESS_GUILD_IDS, BACKEND, JUDGE
+notepad src\settings.codex.js   # MODEL, EFFORT se usar Codex
+notepad prompt.web.md            # persona/premissas do modo web; prompt.full.md para full
+                                 # prompt.web.codex.md vale para o backend Codex
 npm start
 ```
 
 O processo precisa ficar aberto (terminal, ou o terminal integrado do VSCode).
-Cada lote processado consome um turno do plano claude.ai.
+O uso e os limites dependem da conta e do backend selecionado.
 
 ## Velocidade e custo
 
@@ -130,12 +130,29 @@ full usa `--yolo` no `WORK_DIR`. Sessões (`--resume`) e reinício
 automático funcionam igual. O `/status` não mostra uso do plano (é da API da
 Anthropic) e o log fica sem custo estimado.
 
+## Usar o Codex
+
+1. Instale o Codex CLI e autentique com `codex login`; o comando `codex` precisa
+   estar no PATH (ou configure `CODEX_BIN` no `.env`).
+2. Selecione `BACKEND = 'codex'` em [src/settings.js](src/settings.js). O
+   modelo padrão e a lista `/model` ficam em [src/settings.codex.js](src/settings.codex.js);
+   GPT-6 Luna é a única opção.
+3. O bot lê `CODEX_BIN` do `.env` (padrão `codex`) e usa
+   [prompt.web.codex.md](prompt.web.codex.md), baseado no prompt do Command Code.
+
+O modo web usa `codex exec --json`, busca web e sandbox somente de leitura, sem
+shell local. O prompt específico é uma cópia inicial do
+[prompt do Command Code](prompt.web.commandcode.md), para manter a mesma persona
+e as mesmas posições do DeepSeek. O modo full, disponível apenas nos servidores em
+`FULL_ACCESS_GUILD_IDS`, executa sem sandbox no `WORK_DIR`. Imagens são anexadas
+diretamente à chamada de visão. Sessões podem ser retomadas entre mensagens e
+as métricas registram tokens e buscas web.
+
 ## Logs
 
 Console legível e arquivo `logs/bot.log` (JSON por linha, via pino). Cada
-lote registra: mensagem recebida → espera do lote → "gerando com
-deepseek/deepseek-v4.1-flash" (o modelo usado no lote, escolhido ou padrão) →
-o que o Claude está fazendo ("procurando na web: …", "executando comando: …")
+lote registra: mensagem recebida → espera do lote → modelo usado no lote →
+atividade do backend ("pesquisando na web: …", "executando comando: …")
 → envio ao Discord, com tempo, turnos e custo estimado. `LOG_LEVEL` no `.env`.
 
 ## Testes

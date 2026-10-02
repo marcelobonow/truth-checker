@@ -12,7 +12,7 @@ export { TARGET_USER_IDS } from './users.js';
 // cargo, sem reiniciar o bot.
 export const TARGET_ROLE_IDS = [
   "1550716105775910932",
-  "1554255764229718080",
+  "1554252722608279574",
 ];
 
 // Servidores onde os usuários acima têm acesso total à máquina (modo full).
@@ -21,10 +21,10 @@ export const FULL_ACCESS_GUILD_IDS = [
   // '123456789012345678',
 ];
 
-// Qual CLI gera as respostas: 'claude' (Claude Code) ou 'commandcode' (Command
-// Code, https://commandcode.ai). Modelos por backend: settings.claude.js e
-// settings.commandcode.js. Executáveis: CLAUDE_BIN / COMMANDCODE_BIN no .env.
-export const BACKEND = 'commandcode';
+// Qual CLI gera as respostas: 'claude' (Claude Code), 'commandcode' (Command
+// Code) ou 'codex' (Codex CLI). Modelos por backend: settings.<backend>.js.
+// Executáveis: CLAUDE_BIN / COMMANDCODE_BIN / CODEX_BIN no .env.
+export const BACKEND = 'codex';
 
 // false: só os usuários acima são atendidos (menções de outras pessoas são ignoradas).
 // true: qualquer pessoa que mencionar @bot recebe resposta, sempre em modo web.

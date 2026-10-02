@@ -45,8 +45,8 @@ export function createBackendMetricHandler({ monitor, generationId, backendName,
     if (!usage || typeof usage !== 'object') return;
     const inputTokens = usage.inputTokens ?? usage.input_tokens;
     const outputTokens = usage.outputTokens ?? usage.output_tokens;
-    const cacheReadInputTokens = usage.cacheReadTokens ?? usage.cache_read_input_tokens;
-    const cacheCreationInputTokens = usage.cacheWriteTokens ?? usage.cache_creation_input_tokens;
+    const cacheReadInputTokens = usage.cacheReadTokens ?? usage.cache_read_input_tokens ?? usage.cached_input_tokens;
+    const cacheCreationInputTokens = usage.cacheWriteTokens ?? usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens;
     if ([inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens].every((value) => value == null)) return;
     const ordinal = next(attempt);
     tokenEventsByAttempt.set(attempt, (tokenEventsByAttempt.get(attempt) ?? 0) + 1);
@@ -74,6 +74,15 @@ export function createBackendMetricHandler({ monitor, generationId, backendName,
       if (item.type === 'tool_queued') startTool(item.toolName, callId, attempt, item.model);
       if (item.type === 'tool_completed') finishTool(item.toolName, callId, attempt, item.isError || item.error ? 'failure' : 'success');
       if (item.type === 'tool_denied') finishTool(item.toolName, callId, attempt, 'failure');
+      return;
+    }
+
+    if (backendName === 'codex') {
+      if (event.type === 'turn.completed') recordUsage(event.usage, event.model, attempt);
+      const item = event.item;
+      if (!item) return;
+      if (event.type === 'item.started' && item.type === 'web_search') startTool('web_search', item.id, attempt, event.model);
+      if (event.type === 'item.completed' && item.type === 'web_search') finishTool('web_search', item.id, attempt, item.status === 'failed' ? 'failure' : 'success');
       return;
     }
 

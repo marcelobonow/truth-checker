@@ -38,7 +38,7 @@ function required(name) {
   return env[name];
 }
 
-// CLI que gera as respostas (claude ou command-code) e os modelos dele
+// CLI que gera as respostas e os modelos do backend ativo
 const { backend, settings: { MODEL, EFFORT, WEB_MAX_TURNS, MODEL_CHOICES = [] } } = await selectBackend(BACKEND).catch(fatal);
 // Modelos que os usuários podem escolher (/model): allowlist do settings do
 // backend; lista vazia desliga /model e /model-list (docs/model-selector.md).
@@ -215,7 +215,7 @@ client.on('shardResume', (shardId) => {
 
 // Registro global: mudanças podem levar até ~1h para aparecer no autocomplete.
 const COMMANDS = [
-  { name: 'reset', description: 'Reinicia a sessão do Claude neste servidor', contexts: [InteractionContextType.Guild] },
+  { name: 'reset', description: 'Reinicia a sessão do bot neste servidor', contexts: [InteractionContextType.Guild] },
   { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
   { name: 'metrics', description: 'Mostra desconexões e uso de tokens da última semana', contexts: [InteractionContextType.Guild] },
   {
@@ -344,7 +344,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.deferReply(ephemeral);
     let usage;
     if (!backend.supportsUsage) {
-      usage = 'Uso do plano: só disponível com o Claude Code.';
+      usage = 'Uso do plano: indisponível para este backend.';
     } else {
       try {
         usage = `Uso do plano (5h/semana): ${formatUsage(await fetchUsage())}.`;
@@ -425,7 +425,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // defasado (até ~1 h) em relação ao MODEL_CHOICES do settings.
     const entry = entryByValue.get(choice);
     if (!reset && !entry) {
-      await interaction.reply({ content: `Modelo fora da lista: \`${choice}\`.`, ...ephemeral });
+      await interaction.reply({
+        content: `O modelo \`${choice}\` não está disponível no backend atual (\`${backend.name}\`). Nenhuma alteração foi salva; sua preferência salva não foi alterada. A lista do \`/model\` está desatualizada no Discord. Aguarde a atualização do comando e tente novamente.`,
+        ...ephemeral,
+      });
       return;
     }
     const saved = reset ? modelStore?.clear(interaction.user.id) : modelStore?.set(interaction.user.id, choice);
@@ -702,7 +705,7 @@ async function processBatch(items, run) {
     mentions,
     indexed: target,
     referenceTimestamp: last.createdTimestamp,
-    emphasizeQuote: backend.name === 'commandcode',
+    emphasizeQuote: backend.name === 'commandcode' || backend.name === 'codex',
     userPrompt,
   });
   const prompt = promptWith(context);
@@ -730,7 +733,8 @@ async function processBatch(items, run) {
   }
 
   // Modelo do autor: a escolha salva (/model) sobrepõe MODEL/EFFORT do settings.
-  // Escolha fora da lista atual (mudou o MODEL_CHOICES) volta ao padrão.
+  // Escolha fora da lista atual (ex.: troca de backend) fica salva, mas esta
+  // execução usa o modelo e esforço padrão do backend ativo.
   const savedChoice = modelStore?.get(last.author.id);
   const entry = entryByValue.get(savedChoice);
   if (savedChoice && !entry) {
