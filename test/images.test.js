@@ -58,6 +58,40 @@ test('collectImages: sem mensagem citada, só a própria', () => {
   assert.deepEqual(images.map((i) => i.name), ['a.png']);
 });
 
+test('collectImages liga cada imagem ao autor e à mensagem de origem', () => {
+  const message = {
+    id: 'request', guildId: 'g1', channelId: 'c1', createdTimestamp: Date.parse('2026-10-08T17:00:00Z'), content: 'olha',
+    author: { id: 'u1', username: 'pessoa' }, member: { displayName: 'Pessoa' },
+    attachments: new Map([['a', att('a')]]),
+  };
+  const reference = {
+    id: 'original', guildId: 'g1', channelId: 'c1', createdTimestamp: Date.parse('2026-10-08T16:00:00Z'), content: '',
+    author: { id: 'u2', username: 'outra' }, member: { displayName: 'Outra' },
+    attachments: new Map([['b', att('b')]]),
+  };
+  const { images } = collectImages({ message, reference, mentionsBot: true, isTarget: true, limits: { max: 3, maxBytes: 1000 } });
+  assert.deepEqual(images.map((image) => [image.sourceMessageId, image.sourceAuthorId, image.sourceAuthorName]), [
+    ['request', 'u1', 'Pessoa'], ['original', 'u2', 'Outra'],
+  ]);
+  assert.deepEqual(images.map((image) => [image.sourceGuildId, image.sourceChannelId]), [['g1', 'c1'], ['g1', 'c1']]);
+});
+
+test('analyzeImages mantém o vínculo de origem no resultado persistível', async () => {
+  const dir = tmpDir();
+  const backend = { buildRequest: ({ prompt }) => ({ args: [], prompt }), run: async () => ({ text: 'Descrição da imagem.', isError: false }) };
+  const config = { bin: 'cli', model: {}, effort: {}, images: { maxBytes: 100, maxChars: 100, timeoutMs: 5_000 } };
+  const images = [{ source: 'citada', name: 'foto.png', url: 'https://x/foto.png', mediaAnalysisId: 'media-1', sourceMessageId: 'original', sourceGuildId: 'g1', sourceChannelId: 'c1', sourceAuthorId: 'u2', sourceAuthorName: 'Outra', sourceCreatedAt: '2026-10-08T16:00:00.000Z' }];
+  try {
+    const [result] = await analyzeImages(images, { dir, fileBase: 'request', hint: '', context: [], backend, config, fetchImpl: fakeFetch(Buffer.from([1])) });
+    assert.equal(result.mediaAnalysisId, 'media-1');
+    assert.equal(result.sourceMessageId, 'original');
+    assert.equal(result.sourceGuildId, 'g1');
+    assert.equal(result.sourceChannelId, 'c1');
+    assert.equal(result.sourceAuthorName, 'Outra');
+    assert.equal(result.description, 'Descrição da imagem.');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bot-imagens-'));
 }

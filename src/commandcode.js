@@ -24,21 +24,24 @@ export function webDir(root) {
 }
 
 export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
+  const instructions = systemPrompt({ mode, workDir, extraPrompt });
   const args = ['-p', '--output-format', 'json', '--skip-onboarding', '--trust', '--no-auto-update',
-    '--mod', MOD, '--mod-option', `systemPrompt=${systemPrompt({ mode, workDir, extraPrompt })}`];
+    '--mod', MOD, '--mod-option', `systemPrompt=${instructions}`];
   if (mode === 'web') {
     args.push('--mod-option', `tools=${WEB_TOOLS}`, '--no-skills');
     if (maxTurns) args.push('--max-turns', String(maxTurns));
   } else if (mode === 'vision') {
     // Descrição de imagem: só read_file (limitado ao workspace = pasta da imagem), sem sessão
     args.push('--mod-option', 'tools=read_file,search_tools', '--no-skills', '--max-turns', '4');
+  } else if (mode === 'analysis') {
+    args.push('--mod-option', 'tools=', '--no-skills', '--max-turns', '1');
   } else {
     args.push('--mod-option', 'tools=*', '--yolo');
   }
   if (model) args.push('-m', model);
   if (effort) args.push('--effort', effort);
-  if (sessionId && mode !== 'vision') args.push('--resume', sessionId);
-  return { args, prompt };
+  if (sessionId && !['vision', 'analysis'].includes(mode)) args.push('--resume', sessionId);
+  return { args, prompt, systemPrompt: instructions };
 }
 
 // Última linha `type: "result"`. `subtype: "error"` (ex.: sessão inexistente)

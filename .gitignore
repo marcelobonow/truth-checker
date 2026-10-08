@@ -7,3 +7,6 @@ monitor.db*
 logs/
 src/users.js
 imagens/
+conversas/
+memorias-conversas/
+estado-analise-conversas.json

@@ -6,6 +6,7 @@ export const MODEL = {
   web: "deepseek/deepseek-v4.1-flash",
   full: "deepseek/deepseek-v4.1-flash",
   vision: null, // descrição de imagens (IMAGES em settings.js); null = mesmo do web
+  analysis: null, // análise diária; null = mesmo do web
 };
 
 // Modelos que os usuários podem escolher com /model (docs/model-selector.md).
@@ -33,6 +34,7 @@ export const EFFORT = {
   web: "high",
   full: "high",
   vision: null, // null = mesmo do web
+  analysis: null, // null = mesmo do web
 };
 
 // Máximo de turnos por resposta no modo web. Cada busca gasta ~2 turnos

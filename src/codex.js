@@ -12,15 +12,15 @@ export function webDir(root) {
 }
 
 export function buildArgs({ mode, sessionId, workDir, model, effort, imageFile }) {
-  if (!['web', 'full', 'vision'].includes(mode)) throw new Error(`modo desconhecido: ${mode}`);
+  if (!['web', 'full', 'vision', 'analysis'].includes(mode)) throw new Error(`modo desconhecido: ${mode}`);
 
   const args = ['exec'];
-  if (sessionId && mode !== 'vision') args.push('resume', sessionId);
+  if (sessionId && !['vision', 'analysis'].includes(mode)) args.push('resume', sessionId);
   args.push('--json', '--skip-git-repo-check', '--ignore-user-config');
   if (workDir && !sessionId) args.push('--cd', workDir);
   if (model) args.push('--model', model);
   if (effort) args.push('--config', `model_reasoning_effort=${JSON.stringify(effort)}`);
-  args.push('--config', `web_search=${JSON.stringify(mode === 'vision' ? 'disabled' : 'live')}`);
+  args.push('--config', `web_search=${JSON.stringify(['vision', 'analysis'].includes(mode) ? 'disabled' : 'live')}`);
   args.push('--disable', 'apps', '--disable', 'multi_agent');
 
   if (mode === 'full') {
@@ -152,6 +152,7 @@ export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, eff
     args: buildArgs({ mode, sessionId, workDir, model, effort, imageFile }),
     prompt: adjustedPrompt,
     instructions: codexInstructions({ mode, workDir, extraPrompt }),
-    sessionId,
+    systemPrompt: codexInstructions({ mode, workDir, extraPrompt }),
+    sessionId: mode === 'analysis' ? undefined : sessionId,
   };
 }

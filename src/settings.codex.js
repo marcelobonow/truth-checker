@@ -4,6 +4,7 @@ export const MODEL = {
   web: 'gpt-6-luna',
   full: 'gpt-6-luna',
   vision: 'gpt-6-luna',
+  analysis: null, // null = mesmo do web
 };
 
 // Luna é o único modelo disponível no seletor /model para este backend.
@@ -15,6 +16,7 @@ export const EFFORT = {
   web: 'low',
   full: 'low',
   vision: 'low',
+  analysis: null, // null = mesmo do web
 };
 
 // O Codex CLI não expõe atualmente um limite equivalente a --max-turns.

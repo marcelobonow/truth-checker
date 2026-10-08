@@ -41,3 +41,15 @@ test('size conta a tarefa em andamento e as que esperam; zera quando tudo termin
   await c.catch(() => {});
   assert.equal(queue.size(), 0);
 });
+test('fila prioriza respostas normais sobre análise que ainda espera', async () => {
+  const queue = createQueue();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const order = [];
+  const active = queue.add(async () => { await gate; order.push('ativo'); });
+  const analysis = queue.add(() => order.push('analise'), { priority: 'low' });
+  const response = queue.add(() => order.push('resposta'));
+  release();
+  await Promise.all([active, analysis, response]);
+  assert.deepEqual(order, ['ativo', 'resposta', 'analise']);
+});

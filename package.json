@@ -15,6 +15,7 @@
     "discord.js": "^14.27.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.12.3",
+    "node-cron": "^4.6.0",
     "pdf-parse": "^2.4.5",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

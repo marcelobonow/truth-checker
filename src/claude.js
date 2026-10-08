@@ -18,13 +18,14 @@ export function buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort
     // teto de idas à web por resposta: cada resultado de busca entra no contexto
     if (maxTurns) args.push('--max-turns', String(maxTurns));
   }
+  if (mode === 'analysis') args.push('--tools', '', '--allowedTools', '', ...lean, '--max-turns', '1');
   if (mode === 'full') args.push('--dangerously-skip-permissions');
   // Descrição de imagem: só Read (o cwd é a pasta da imagem, e Read fora dele
   // é negado em -p), sem sessão; ler + responder cabe em poucos turnos.
   if (mode === 'vision') args.push('--tools', 'Read', ...lean, '--max-turns', '3');
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
-  if (sessionId && mode !== 'vision') args.push('--resume', sessionId);
+  if (sessionId && !['vision', 'analysis'].includes(mode)) args.push('--resume', sessionId);
   return args;
 }
 
@@ -137,7 +138,7 @@ export const supportsUsage = true; // /status consulta o uso do plano claude.ai
 export const run = runClaude;
 
 export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
-  return { args: buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns }), prompt };
+  return { args: buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns }), prompt, systemPrompt: systemPrompt({ mode, workDir, extraPrompt }) };
 }
 
 // Mensagem exata do CLI ao retomar sessão inexistente (verificada em 2026-09-17).
