@@ -31,6 +31,7 @@ import { BACKEND, CONVERSATION, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GU
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
+const ADMIN_USER_ID = env.ADMIN_USER_ID?.trim() || null;
 const PROMPT_MODAL_ID = 'user-prompt-editor';
 const PROMPT_INPUT_ID = 'prompt-text';
 
@@ -353,6 +354,19 @@ client.on('shardResume', (shardId) => {
 
 // Registro global: mudanças podem levar até ~1h para aparecer no autocomplete.
 const COMMANDS = [
+  { name: 'servidores', description: 'Mostra os servidores em que o bot está', contexts: [InteractionContextType.Guild] },
+  {
+    name: 'sair',
+    description: 'Remove o bot de um servidor',
+    contexts: [InteractionContextType.Guild],
+    options: [{
+      type: ApplicationCommandOptionType.String,
+      name: 'servidor',
+      description: 'Servidor de onde o bot deve sair (busque pelo nome ou ID)',
+      required: true,
+      autocomplete: true,
+    }],
+  },
   { name: 'reset', description: 'Reinicia a sessão do bot neste servidor', contexts: [InteractionContextType.Guild] },
   { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
   { name: 'metrics', description: 'Mostra desconexões e uso de tokens da última semana', contexts: [InteractionContextType.Guild] },
@@ -489,9 +503,68 @@ client.on(Events.InteractionCreate, async (interaction) => {
           : 'Prompt personalizado removido. A próxima resposta começará uma nova sessão.');
     return;
   }
+  if (interaction.isAutocomplete()) {
+    if (interaction.commandName !== 'sair') return;
+    if (!ADMIN_USER_ID || interaction.user.id !== ADMIN_USER_ID) {
+      await interaction.respond([]);
+      return;
+    }
+    const query = interaction.options.getFocused().trim().toLocaleLowerCase('pt-BR');
+    const choices = client.guilds.cache
+      .filter((guild) => !query || guild.name.toLocaleLowerCase('pt-BR').includes(query) || guild.id.includes(query))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+      .first(25)
+      .map((guild) => ({ name: `${guild.name} (${guild.id})`.slice(0, 100), value: guild.id }));
+    await interaction.respond(choices);
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
   const ephemeral = { flags: MessageFlags.Ephemeral };
-  const where = `${interaction.guild.name} #${interaction.channel?.name}`;
+  if (interaction.commandName === 'servidores' || interaction.commandName === 'sair') {
+    if (!ADMIN_USER_ID || interaction.user.id !== ADMIN_USER_ID) {
+      await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
+      return;
+    }
+    if (interaction.commandName === 'servidores') {
+      const guilds = [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+      if (guilds.length === 0) {
+        await interaction.reply({ content: 'O bot não está em nenhum servidor.', ...ephemeral });
+        return;
+      }
+      const pages = [];
+      let page = `Servidores em que o bot está (${guilds.length}):`;
+      for (const guild of guilds) {
+        const line = `\n• ${guild.name} — \`${guild.id}\``;
+        if (page.length + line.length > 1900) {
+          pages.push(page);
+          page = '';
+        }
+        page += line;
+      }
+      pages.push(page);
+      await interaction.reply({ content: pages[0], ...ephemeral });
+      for (const content of pages.slice(1)) await interaction.followUp({ content, ...ephemeral });
+      return;
+    }
+
+    const guildId = interaction.options.getString('servidor', true);
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      await interaction.reply({ content: 'Não encontrei esse servidor. Use a busca para escolher um servidor da lista atual.', ...ephemeral });
+      return;
+    }
+    await interaction.deferReply(ephemeral);
+    try {
+      await guild.leave();
+      await interaction.editReply(`O bot saiu de **${guild.name}** (\`${guild.id}\`).`);
+      logger.info({ guildId: guild.id, guildName: guild.name, adminId: interaction.user.id }, 'bot removido do servidor');
+    } catch (err) {
+      logger.warn({ err, guildId: guild.id, guildName: guild.name }, 'não foi possível sair do servidor');
+      await interaction.editReply(`Não consegui sair de **${guild.name}**: ${err.message}`);
+    }
+    return;
+  }
+  const where = `${interaction.guild?.name ?? 'DM'} #${interaction.channel?.name ?? ''}`;
   const who = interaction.member?.displayName ?? interaction.user.displayName;
   if (!isTarget({ authorId: interaction.user.id, roleIds: roleIds(interaction.member) }, config)) {
     logger.info({ canal: where, autor: who }, `/${interaction.commandName} recusado: fora da whitelist`);
