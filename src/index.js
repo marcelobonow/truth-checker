@@ -125,7 +125,7 @@ const conversationConfig = {
 const analysisSystemPrompt = systemPrompt({ mode: 'analysis', workDir: ROOT });
 const analysisInputBudget = Math.max(200, CONVERSATION.maxInputChars - Buffer.byteLength(analysisSystemPrompt));
 const analyzerConfigHash = crypto.createHash('sha256').update(JSON.stringify({
-  version: 3, backend: analysisBackend.name, model: conversationConfig.model.analysis,
+  version: 4, backend: analysisBackend.name, model: conversationConfig.model.analysis,
   effort: conversationConfig.effort.analysis, timeZone: CONVERSATION.timeZone,
   analysisPrompt: analysisSystemPrompt, analysisInputBudget,
   maxInputChars: CONVERSATION.maxInputChars, maxLookupQueries: CONVERSATION.maxLookupQueries,
@@ -258,49 +258,13 @@ const conversationScheduler = conversationArchive && CONVERSATION.analysisEnable
     },
   })
   : null;
-const conversationChannelsSeen = new Map();
 let gatewayWasReady = false;
-let gatewayConnectedAt = null;
 let shuttingDown = false;
-
-function recordConversationEvent(event) {
-  if (!conversationArchive || !CONVERSATION.captureEnabled) return Promise.resolve(false);
-  return conversationArchive.recordEvent(event).catch((err) => {
-    logger.warn({ err, guildId: event.guildId, channelId: event.channelId }, 'não foi possível salvar evento da conversa');
-    return false;
-  });
-}
 
 function recordConversationMessage(message) {
   if (!conversationArchive || !CONVERSATION.captureEnabled || !conversationArchive.captureAllowed(message)) return;
-  const key = `${message.guildId}:${message.channelId}`;
-  if (!conversationChannelsSeen.has(key)) {
-    conversationChannelsSeen.set(key, { guildId: message.guildId, channelId: message.channelId });
-    void conversationArchive.recordStatus({ guildId: message.guildId, channelId: message.channelId, status: 'capture_started', connectedAt: gatewayConnectedAt })
-      .catch((err) => logger.warn({ err }, 'não foi possível registrar início da captura'));
-  }
-  void conversationArchive.recordMessage(message, { botId: client.user?.id })
+  void conversationArchive.recordMessage(message)
     .catch((err) => logger.warn({ err, guildId: message.guildId, channelId: message.channelId }, 'não foi possível salvar mensagem da conversa'));
-}
-
-function recordConversationConnectionStatus(status, details = {}) {
-  if (!conversationArchive || !CONVERSATION.captureEnabled) return;
-  if (status === 'connected' || status === 'resumed') gatewayConnectedAt = details.connectedAt ?? new Date().toISOString();
-  else if (status === 'disconnected' || status === 'capture_stopped') gatewayConnectedAt = null;
-  for (const { guildId, channelId } of conversationChannelsSeen.values()) {
-    void conversationArchive.recordStatus({ guildId, channelId, status, ...details })
-      .catch((err) => logger.warn({ err, guildId, channelId }, 'não foi possível registrar estado da captura'));
-  }
-}
-
-function recordMessageDecision(message, decision, reason = null, details = {}) {
-  if (!conversationArchive || !CONVERSATION.captureEnabled || !message.guildId) return;
-  return recordConversationEvent({
-    type: 'decision', eventId: `decision:${message.id}`, messageId: String(message.id),
-    guildId: String(message.guildId), channelId: String(message.channelId),
-    createdAt: new Date(message.createdTimestamp).toISOString(), authorId: String(message.author.id),
-    authorName: displayName(message), decision, reason, ...details,
-  });
 }
 
 function sampleConnection() {
@@ -425,12 +389,6 @@ client.once(Events.ClientReady, async (c) => {
   sampleConnection();
   c.user.setPresence({ status: 'online' });
   logger.info(`conectado como ${c.user.tag}`);
-  if (conversationArchive && CONVERSATION.captureEnabled) {
-    try {
-      for (const channel of await conversationArchive.listRecordedChannels()) conversationChannelsSeen.set(`${channel.guildId}:${channel.channelId}`, channel);
-    } catch (err) { logger.warn({ err }, 'não foi possível listar canais arquivados'); }
-  }
-  recordConversationConnectionStatus('connected');
   if (conversationScheduler) {
     conversationCron = createConversationCron({
       cron,
@@ -470,11 +428,6 @@ client.once(Events.ClientReady, async (c) => {
     sessao: SESSION,
   }, 'configuração');
 });
-
-client.on(Events.ShardDisconnect, (closeEvent, shardId) => recordConversationConnectionStatus('disconnected', {
-  shardId, closeCode: closeEvent?.code ?? null, wasClean: Boolean(closeEvent?.wasClean),
-}));
-client.on(Events.ShardResume, (shardId) => recordConversationConnectionStatus('resumed', { shardId }));
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isModalSubmit()) {
@@ -805,7 +758,6 @@ client.on(Events.MessageCreate, async (message) => {
   const who = displayName(message);
   const skip = skipReason(meta, config);
   if (skip) {
-    recordMessageDecision(message, 'skipped', skip);
     // as próprias respostas do bot também chegam aqui: só em debug, para não poluir
     const level = message.author.id === client.user.id ? 'debug' : 'info';
     logger[level]({ canal: where, autor: who }, `não analisando (${skip}): ${oneLine(message.cleanContent)}`);
@@ -824,14 +776,12 @@ client.on(Events.MessageCreate, async (message) => {
   const allowedBot = message.author.bot && config.respondToBotIds.includes(message.author.id);
   if (config.mentionsAndRepliesOnly && !mentionsBot && !allowedBot) {
     if (!message.reference?.messageId) {
-      recordMessageDecision(message, 'skipped', 'MENTIONS_AND_REPLIES_ONLY: sem menção nem reply');
       logger.info({ canal: where, autor: who }, `não analisando (MENTIONS_AND_REPLIES_ONLY): sem menção nem reply: ${oneLine(message.cleanContent)}`);
       return;
     }
     reference = await resolveReference(message, item);
     referenceResolved = true;
     if (!isDirectMessageToBot(item)) {
-      recordMessageDecision(message, 'skipped', 'MENTIONS_AND_REPLIES_ONLY: reply não é ao bot', { referenceMessageId: message.reference?.messageId ?? null });
       logger.info({ canal: where, autor: who }, `não analisando (MENTIONS_AND_REPLIES_ONLY): reply não é ao bot: ${oneLine(message.cleanContent)}`);
       return;
     }
@@ -842,12 +792,9 @@ client.on(Events.MessageCreate, async (message) => {
   const mayHaveImage = mentionsBot && item.target && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
   const mayHaveFile = item.target && config.files.max > 0 && message.attachments.size > 0;
   if (!hasText(message.content) && !mayHaveImage && !mayHaveFile) {
-    recordMessageDecision(message, 'skipped', 'sem texto ou mídia processável');
     logger.info(`ignorada: sem texto (${message.attachments.size} anexo(s), ${message.embeds.length} embed(s))`);
     return;
   }
-
-  recordMessageDecision(message, 'accepted', null, { target: item.target, mentionsBot, replyToBot: item.replyToBot });
 
   // Entra no lote já (preserva a ordem de chegada); a referência e os anexos
   // são resolvidos em paralelo e aguardados antes de montar o texto.
@@ -902,30 +849,14 @@ async function attachImages(item, reference, { where, who }) {
   const { images, rejected } = collectImages({ message, reference, mentionsBot: item.mentionsBot, isTarget: item.target, limits: config.images });
   for (const r of rejected) {
     logger.info({ canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
-    recordConversationEvent({ type: 'decision', guildId: message.guildId, channelId: message.channelId,
-      createdAt: new Date(message.createdTimestamp).toISOString(), messageId: String(message.id),
-      decision: 'media_not_processed', reason: r.reason, attachmentName: r.name });
   }
   if (images.length === 0) return;
   trackConversationWork(message, 1);
   const mediaImages = images.map((image, index) => ({ ...image, mediaAnalysisId: `image:${message.id}:${Date.now()}:${index + 1}:${crypto.randomUUID()}` }));
   item.mediaAnalysisIds = mediaImages.map((image) => image.mediaAnalysisId);
   const hint = stripBotMention(item.content, message);
-  for (const [index, image] of mediaImages.entries()) {
+  for (const image of mediaImages) {
     logger.info({ canal: where, autor: who, dica: hint || undefined }, `imagem recebida: ${image.name} (${image.size != null ? `${(image.size / 1e6).toFixed(1)} MB, ` : ''}${image.source}) → analisando`);
-    recordConversationEvent({
-      type: 'media_analysis_start', eventId: `${image.mediaAnalysisId}:start`, mediaAnalysisId: image.mediaAnalysisId,
-      kind: 'image_description', status: 'started', guildId: message.guildId, channelId: message.channelId,
-      sourceGuildId: image.sourceGuildId ?? message.guildId, sourceChannelId: image.sourceChannelId ?? message.channelId,
-      triggerGuildId: message.guildId, triggerChannelId: message.channelId,
-      createdAt: image.sourceCreatedAt ?? new Date(message.createdTimestamp).toISOString(),
-      startedAt: new Date().toISOString(), backend: backend.name, model: config.model.vision ?? config.model.web ?? null,
-      requestMessageId: String(message.id), requestAuthorId: String(message.author.id),
-      sourceMessageId: image.sourceMessageId ?? String(message.id), sourceAuthorId: image.sourceAuthorId ?? String(message.author.id),
-      sourceAuthorName: image.sourceAuthorName ?? who, source: image.source, position: index + 1,
-      attachmentId: image.id == null ? null : String(image.id), name: image.name, url: image.url ?? null,
-      contentType: image.contentType ?? null, size: image.size ?? null,
-    });
   }
   // "digitando" durante toda a análise: sinaliza que o fluxo já começou e que
   // o lote fecha em seguida; a geração assume o indicador depois
@@ -944,21 +875,6 @@ async function attachImages(item, reference, { where, who }) {
       monitor,
       analyzedMessageCount: 1,
       onResult: (r, seconds) => {
-        const sourceImage = mediaImages.find((image) => image.mediaAnalysisId === r.mediaAnalysisId);
-        recordConversationEvent({
-          type: 'media_analysis_end', eventId: `${r.mediaAnalysisId}:end`, mediaAnalysisId: r.mediaAnalysisId,
-          kind: 'image_description', status: r.error ? 'failed' : 'success', guildId: message.guildId, channelId: message.channelId,
-          sourceGuildId: r.sourceGuildId ?? message.guildId, sourceChannelId: r.sourceChannelId ?? message.channelId,
-          triggerGuildId: message.guildId, triggerChannelId: message.channelId,
-          createdAt: r.sourceCreatedAt ?? new Date(message.createdTimestamp).toISOString(), observedAt: new Date().toISOString(),
-          finishedAt: new Date().toISOString(), backend: backend.name, model: config.model.vision ?? config.model.web ?? null,
-          requestMessageId: String(message.id), requestAuthorId: String(message.author.id),
-          sourceMessageId: r.sourceMessageId ?? String(message.id), sourceAuthorId: r.sourceAuthorId ?? String(message.author.id),
-          sourceAuthorName: r.sourceAuthorName ?? who, source: r.source, position: mediaImages.findIndex((image) => image.mediaAnalysisId === r.mediaAnalysisId) + 1,
-          attachmentId: r.attachmentId ?? null, name: r.name, url: sourceImage?.url ?? null,
-          contentType: sourceImage?.contentType ?? null, size: sourceImage?.size ?? null,
-          output: r.description ?? null, error: r.error ?? null, durationMs: Math.round(seconds * 1000),
-        });
         if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
         else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length, resultado: r.description }, 'imagem descrita');
       },
@@ -1018,7 +934,6 @@ async function shutdown(signal) {
   monitor.finishConnectionEpisode({ endedAt: Date.now(), reason: 'shutdown' });
   monitor.closeOpenOutages({ endedAt: Date.now(), reason: 'shutdown' });
   await client.destroy();
-  recordConversationConnectionStatus('capture_stopped', { signal });
   if (conversationArchive) {
     const flushed = await conversationArchive.flush();
     if (!flushed) logger.error('captura de conversas não terminou de gravar durante o shutdown');
@@ -1110,19 +1025,8 @@ async function processBatch(items, run) {
     effort: entry ? entry.effort ?? null : config.effort?.[mode] ?? null,
     analyzedMessageCount: items.length + context.length,
   });
-  const promptSnapshotId = `prompt:${generationId}`;
   const metricsEvents = createBackendMetricHandler({ monitor, generationId, backendName: backend.name, fallbackModel: requestedModel });
   let backendSucceeded = false;
-  let generatedText = null;
-  let sessionReset = null;
-  let deliveredText = null;
-  let deliveryError = null;
-  let responseTargetId = last.id == null ? null : String(last.id);
-  let generationOutcome = 'failed';
-  const deliveredMessages = [];
-  const noteSent = (sentMessage, content) => {
-    if (sentMessage?.id) deliveredMessages.push({ messageId: String(sentMessage.id), content });
-  };
   const onEvent = (event, metadata) => {
     metricsEvents(event, metadata);
     const activity = backend.describeEvent(event);
@@ -1133,33 +1037,9 @@ async function processBatch(items, run) {
   // Daqui em diante mensagem nova do autor não cancela mais (ver inflight.js).
   inflight.lock(run);
   try {
-    const requestSnapshot = backend.buildRequest({
-      mode, sessionId: store.get(key), workDir: mode === 'full' ? config.workDir : config.webDir,
-      extraPrompt: config.extraPrompt?.[mode], model: entry?.model ?? config.model?.[mode],
-      effort: entry ? entry.effort ?? null : config.effort?.[mode], maxTurns: config.maxTurns?.[mode], prompt,
-    });
-    recordConversationEvent({
-      type: 'prompt_snapshot', eventId: promptSnapshotId, generationId, guildId: last.guildId, channelId: last.channelId,
-      createdAt: new Date(started).toISOString(), mode, backend: backend.name,
-      systemPrompt: requestSnapshot.systemPrompt ?? requestSnapshot.instructions ?? null,
-      extraPromptFile: prompts[mode]?.file ?? null,
-    });
-    recordConversationEvent({
-      type: 'generation_start', eventId: `generation:${generationId}:start`, generationId, promptSnapshotId,
-      guildId: last.guildId, channelId: last.channelId, createdAt: new Date(started).toISOString(),
-      backend: backend.name, mode, model: requestedModel, effort: entry ? entry.effort ?? null : config.effort?.[mode] ?? null,
-      sessionMode: store.get(key) ? 'resumed' : 'new',
-      sourceMessageIds: items.map((item) => String(item.message.id)), contextMessageIds: context.map((event) => String(event.id)),
-      mediaAnalysisIds: items.flatMap((item) => item.mediaAnalysisIds ?? []),
-      fileTexts: items.flatMap((item) => (item.files ?? []).map((file) => ({ sourceMessageId: String(item.message.id), name: file.name, text: file.text ?? null, error: file.error ?? null }))),
-      prompt,
-    });
     const sessionBefore = store.get(key);
     const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length, model: entry?.model, effort: entry?.effort });
     backendSucceeded = !res.isError;
-    generatedText = res.text ?? '';
-    sessionReset = res.sessionReset ?? null;
-    generationOutcome = res.isError ? 'model_failed' : isNoReply(res.text) ? 'no_reply' : 'awaiting_delivery';
     if (!metricsEvents.hasTokenEvents(res.attemptNumber)) {
       for (const [index, usage] of (res.tokenUsage ?? []).entries()) {
         monitor.recordTokenUsage({
@@ -1190,23 +1070,18 @@ async function processBatch(items, run) {
     const stats = { segundos: elapsed, turnos: res.numTurns, custoEstimadoUsd: res.costUsd, mensagensNaSessao: store.info(key)?.messages };
     if (res.isError) {
       logger.error({ ...stats, subtype: res.subtype }, `${backend.name} retornou erro: ${preview(res.text)}`);
-      deliveredText = `⚠️ ${backend.name} retornou erro (${res.subtype}): ${res.text}`;
-      await send(last, deliveredText, { onSent: noteSent });
+      await send(last, `⚠️ ${backend.name} retornou erro (${res.subtype}): ${res.text}`);
     } else if (isNoReply(res.text)) {
       logger.info({ canal: where, autor: displayName(last), ...stats }, `${backend.name} decidiu não responder: ${oneLine(last.cleanContent)}`);
     } else {
       const { replyTo, text } = target ? parseDirective(res.text) : { replyTo: null, text: res.text };
-      deliveredText = text;
       const replyMessage = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
-      responseTargetId = String((replyMessage ?? last).id);
       logger.info({ ...stats, chars: text.length, respondendoA: replyMessage ? `#${replyTo}` : undefined }, 'enviando para o discord');
-      const sent = await send(replyMessage ?? last, text, { onSent: noteSent });
+      const sent = await send(replyMessage ?? last, text);
       if (sent?.ok) {
-        generationOutcome = 'delivered';
         monitor.markReplied({ id: generationId });
         logger.info('resposta enviada');
       } else {
-        generationOutcome = 'delivery_failed';
         monitor.setGenerationOutcome(generationId, 'delivery_failed');
       }
     }
@@ -1214,25 +1089,14 @@ async function processBatch(items, run) {
     if (err.name === 'AbortError') {
       if (backendSucceeded) monitor.setGenerationOutcome(generationId, 'delivery_cancelled');
       else monitor.finishGeneration({ id: generationId, modelSucceeded: false, outcome: 'cancelled' });
-      generationOutcome = 'cancelled';
       logger.info({ canal: where, segundos: ((Date.now() - started) / 1000).toFixed(1) }, 'geração descartada');
       return;
     }
-    if (backendSucceeded) { monitor.setGenerationOutcome(generationId, 'delivery_failed'); generationOutcome = 'delivery_failed'; }
-    else { monitor.finishGeneration({ id: generationId, modelSucceeded: false, outcome: 'failed' }); generationOutcome = 'failed'; }
+    if (backendSucceeded) monitor.setGenerationOutcome(generationId, 'delivery_failed');
+    else monitor.finishGeneration({ id: generationId, modelSucceeded: false, outcome: 'failed' });
     logger.error({ err }, 'falha ao gerar resposta');
-    deliveryError = err.message;
-    if (!backendSucceeded) deliveredText = `⚠️ ${err.message}`;
-    await send(last, `⚠️ ${err.message}`, { onSent: noteSent }).catch(() => {});
+    await send(last, `⚠️ ${err.message}`).catch(() => {});
   } finally {
-    recordConversationEvent({
-      type: 'generation_end', eventId: `generation:${generationId}:end`, generationId, promptSnapshotId,
-      guildId: last.guildId, channelId: last.channelId, createdAt: new Date(started).toISOString(),
-      finishedAt: new Date().toISOString(), outcome: generationOutcome, generatedText, deliveredText, sessionReset,
-      sourceMessageIds: items.map((item) => String(item.message.id)),
-      mediaAnalysisIds: items.flatMap((item) => item.mediaAnalysisIds ?? []),
-      deliveredMessages, deliveryError, replyToMessageId: responseTargetId,
-    });
     typing.stop();
     trackConversationWork(last, -1);
   }

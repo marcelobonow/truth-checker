@@ -5,7 +5,7 @@ import readline from 'node:readline';
 
 // External stable sort: memory use is bounded by one small run plus fan-in.
 export async function createOrderedJsonlSnapshot(source, destination, {
-  tempDir = `${destination}.sort`, chunkBytes = 4_000_000, maxOpenFiles = 16,
+  tempDir = `${destination}.sort`, chunkBytes = 4_000_000, maxOpenFiles = 16, normalizeEvent,
 } = {}) {
   if (!Number.isInteger(chunkBytes) || chunkBytes < 256) throw new RangeError('chunkBytes deve ser ao menos 256');
   if (!Number.isInteger(maxOpenFiles) || maxOpenFiles < 2) throw new RangeError('maxOpenFiles deve ser ao menos 2');
@@ -25,7 +25,9 @@ export async function createOrderedJsonlSnapshot(source, destination, {
   };
 
   try {
-    for await (const event of readJsonl(source)) {
+    for await (const { record, lineNo } of readJsonlWithLineNumbers(source)) {
+      const event = normalizeEvent ? normalizeEvent(record, lineNo) : record;
+      if (!event) continue;
       const size = Buffer.byteLength(JSON.stringify(event)) + 1;
       if (records.length && bytes + size > chunkBytes) await flush();
       records.push(event);
@@ -106,5 +108,19 @@ async function* readJsonl(file) {
   const lines = readline.createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) if (line) yield JSON.parse(line);
+  } finally { lines.close(); input.destroy(); }
+}
+
+async function* readJsonlWithLineNumbers(file) {
+  let input;
+  try { input = fs.createReadStream(file, { encoding: 'utf8' }); }
+  catch (err) { if (err.code === 'ENOENT') return; throw err; }
+  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  let lineNo = 0;
+  try {
+    for await (const line of lines) {
+      lineNo++;
+      if (line) yield { record: JSON.parse(line), lineNo };
+    }
   } finally { lines.close(); input.destroy(); }
 }

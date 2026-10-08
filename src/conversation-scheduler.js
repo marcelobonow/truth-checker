@@ -103,19 +103,13 @@ export function createConversationScheduler({
   async function prepare(job, key, state) {
     if (!await archive.flush()) throw new Error('a fila do arquivo da conversa não drenou antes da análise');
     if (!isJobIdle(job)) return false;
-    const reconciled = await reconcileInterruptedAttempts(archive, job, now, timeZone);
-    if (reconciled) {
-      if (!await archive.flush()) throw new Error('não foi possível persistir o fechamento das execuções interrompidas');
-      job.sourceHash = await hashFileOrEmpty(job.sourceFile);
-      state.jobs[key] = job;
-      await saveState(state);
-    }
     const currentHash = await hashFileOrEmpty(job.sourceFile);
     if (currentHash !== job.sourceHash) return false;
     if (job.sourceSnapshot && job.auxSnapshot && job.workDir && job.frozenAt) {
       const sourceSnapshotHash = await hashFile(job.sourceSnapshot).catch(() => '');
       const auxSnapshotHash = await hashFile(job.auxSnapshot).catch(() => '');
-      if (sourceSnapshotHash === job.sourceHash && auxSnapshotHash === job.auxSnapshotHash) {
+      const currentFormat = job.sourceSnapshot.endsWith('.messages-v2.jsonl') && job.auxSnapshot.endsWith('.context-v2.jsonl');
+      if (currentFormat && sourceSnapshotHash === job.sourceHash && auxSnapshotHash === job.auxSnapshotHash) {
         const expectedWorkDir = path.join(archive.root, '.work', safeSegment(job.guildId), safeSegment(job.channelId), job.localDate,
           digest(`${job.sourceHash}:${job.contextHash}:${analyzerConfigHash}`));
         if (path.resolve(job.workDir) !== path.resolve(expectedWorkDir)) {
@@ -125,7 +119,10 @@ export function createConversationScheduler({
         const orderedSnapshot = `${job.sourceSnapshot}.ordered.jsonl`;
         let orderedSnapshotHash = await hashFile(orderedSnapshot).catch(() => '');
         if (!orderedSnapshotHash || orderedSnapshotHash !== job.orderedSnapshotHash) {
-          await createOrderedJsonlSnapshot(job.sourceSnapshot, orderedSnapshot, { tempDir: path.join(expectedWorkDir, 'sort') });
+          await createOrderedJsonlSnapshot(job.sourceSnapshot, orderedSnapshot, {
+            tempDir: path.join(expectedWorkDir, 'sort'),
+            normalizeEvent: (record, lineNo) => archive.normalizeRecord(record, { ...job, timeZone, lineNo }),
+          });
           orderedSnapshotHash = await hashFile(orderedSnapshot);
         }
         job.orderedSnapshot = orderedSnapshot;
@@ -143,8 +140,8 @@ export function createConversationScheduler({
     const next = context.next.map((event) => ({ ...event, contextRole: 'next_day' }));
     const contextEvents = [...previous, ...next];
     const contextHash = crypto.createHash('sha256').update(JSON.stringify(contextEvents)).digest('hex');
-    const sourceSnapshot = path.join(archive.root, '.work', safeSegment(job.guildId), safeSegment(job.channelId), `${job.localDate}-${job.sourceHash}.jsonl`);
-    const auxSnapshot = `${sourceSnapshot}.context.jsonl`;
+    const sourceSnapshot = path.join(archive.root, '.work', safeSegment(job.guildId), safeSegment(job.channelId), `${job.localDate}-${job.sourceHash}.messages-v2.jsonl`);
+    const auxSnapshot = `${sourceSnapshot}.context-v2.jsonl`;
     const orderedSnapshot = `${sourceSnapshot}.ordered.jsonl`;
     const workDir = path.join(archive.root, '.work', safeSegment(job.guildId), safeSegment(job.channelId), job.localDate,
       digest(`${job.sourceHash}:${contextHash}:${analyzerConfigHash}`));
@@ -156,7 +153,10 @@ export function createConversationScheduler({
     catch (err) { if (err.code !== 'ENOENT') throw err; await fsp.writeFile(sourceSnapshot, '', 'utf8'); }
     if (await hashFile(sourceSnapshot) !== job.sourceHash || await hashFileOrEmpty(job.sourceFile) !== job.sourceHash) return false;
     await fsp.writeFile(auxSnapshot, contextEvents.map((event) => JSON.stringify(event)).join('\n') + (contextEvents.length ? '\n' : ''), 'utf8');
-    await createOrderedJsonlSnapshot(sourceSnapshot, orderedSnapshot, { tempDir: path.join(workDir, 'sort') });
+    await createOrderedJsonlSnapshot(sourceSnapshot, orderedSnapshot, {
+      tempDir: path.join(workDir, 'sort'),
+      normalizeEvent: (record, lineNo) => archive.normalizeRecord(record, { ...job, timeZone, lineNo }),
+    });
     Object.assign(job, {
       sourceHash: currentHash, contextHash, auxSnapshotHash: await hashFile(auxSnapshot), sourceSnapshot, orderedSnapshot,
       orderedSnapshotHash: await hashFile(orderedSnapshot), auxSnapshot, workDir, frozenAt,
@@ -331,46 +331,12 @@ export function createConversationScheduler({
   }
 }
 
-async function reconcileInterruptedAttempts(archive, job, now, timeZone) {
-  const openGenerations = new Map();
-  const openMedia = new Map();
-  for await (const event of archive.iterateDay(job)) {
-    if (event.type === 'generation_start' && event.generationId) openGenerations.set(String(event.generationId), event);
-    if (event.type === 'generation_end' && event.generationId) openGenerations.delete(String(event.generationId));
-    if (event.type === 'media_analysis_start' && event.mediaAnalysisId) openMedia.set(String(event.mediaAnalysisId), event);
-    if (event.type === 'media_analysis_end' && event.mediaAnalysisId) openMedia.delete(String(event.mediaAnalysisId));
-  }
-  const finishedAt = new Date(now()).toISOString();
-  for (const [generationId, start] of openGenerations) await archive.recordEvent({
-    type: 'generation_end', eventId: `generation:${generationId}:end`, generationId,
-    guildId: job.guildId, channelId: job.channelId, localDate: job.localDate, timeZone,
-    createdAt: start.createdAt, finishedAt, outcome: 'interrupted', generatedText: null, deliveredText: null,
-    sourceMessageIds: start.sourceMessageIds ?? [], mediaAnalysisIds: start.mediaAnalysisIds ?? [],
-    deliveredMessages: [], deliveryError: 'processo reiniciado antes do registro do fim da geração',
-    replyToMessageId: null,
-  });
-  for (const [mediaAnalysisId, start] of openMedia) await archive.recordEvent({
-    type: 'media_analysis_end', eventId: `${mediaAnalysisId}:end`, mediaAnalysisId,
-    guildId: job.guildId, channelId: job.channelId, localDate: job.localDate, timeZone,
-    createdAt: start.createdAt, status: 'interrupted', kind: start.kind ?? null,
-    requestMessageId: start.requestMessageId ?? null, requestAuthorId: start.requestAuthorId ?? null,
-    sourceMessageId: start.sourceMessageId ?? null, sourceAuthorId: start.sourceAuthorId ?? null,
-    sourceAuthorName: start.sourceAuthorName ?? null, name: start.name ?? null,
-    output: null, error: 'processo reiniciado antes do registro do fim da análise',
-  });
-  return openGenerations.size + openMedia.size > 0;
-}
-
 async function scanCoverage(file) {
-  const counts = { eventCount: 0, messageCount: 0, generationCount: 0, gaps: [] };
+  const counts = { messageCount: 0 };
   for await (const event of readJsonl(file)) {
-    counts.eventCount++;
     if (event.type === 'message') counts.messageCount++;
-    if (event.type === 'generation_start') counts.generationCount++;
-    if (event.type === 'capture_status' && event.status === 'gap') counts.gaps.push(`${event.lostRecords} eventos perdidos em ${event.observedAt}`);
-    else if (event.type === 'capture_status' && ['disconnected', 'capture_stopped'].includes(event.status)) counts.gaps.push(`captura ${event.status} em ${event.observedAt}`);
   }
-  counts.captureComplete = counts.gaps.length === 0;
+  counts.captureComplete = true;
   return counts;
 }
 

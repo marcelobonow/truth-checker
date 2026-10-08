@@ -55,7 +55,9 @@ export function compactTimeline(events, { timeZone = 'America/Sao_Paulo' } = {})
     const stamp = event.createdAt || event.observedAt
       ? localParts(event.createdAt ?? event.observedAt, timeZone)
       : { date: event.localDate ?? 'data desconhecida', hour: '00', minute: '00' };
-    const date = event.localDate ?? stamp.date;
+    // A data e a hora vêm do mesmo instante UTC convertido para o fuso da
+    // análise. Usar localDate do caminho pode deixar a data em outro dia.
+    const date = stamp.date;
     if (date !== currentDate) {
       const context = event.contextRole === 'previous_day' ? ' (contexto anterior)' : event.contextRole === 'next_day' ? ' (contexto posterior)' : '';
       lines.push(`${date}${context}`);
@@ -72,7 +74,8 @@ export function compactTimeline(events, { timeZone = 'America/Sao_Paulo' } = {})
     const speaker = event.type === 'message' ? event.authorName ?? 'desconhecido' : event.type;
     const reply = event.reference?.messageId ? ` ↩${event.reference.messageId}` : '';
     const body = eventText(event);
-    const prefix = `${time ? `${time} ` : ''}${speaker} [${ref}]${reply}:`;
+    const mention = event.mentions ? ' [menção]' : '';
+    const prefix = `${time ? `${time} ` : ''}${speaker}${mention} [${ref}]${reply}:`;
     const bodyLines = body.split(/\r?\n/);
     lines.push(`${prefix}${bodyLines[0] ? ` ${bodyLines[0]}` : ''}`);
     for (const line of bodyLines.slice(1)) lines.push(`  | ${line}`);
@@ -111,7 +114,7 @@ export function renderMemoryMarkdown({ analysis, events, metadata }) {
     const quote = String(item.quote).replace(/\r?\n/g, ' ').replace(/([*_`])/g, '\\$1');
     const author = event?.authorName ? ` — ${event.authorName}` : '';
     const link = discordLink(event, metadata);
-    return `> “${quote}”${author}${link ? ` ([mensagem](${link}))` : ` [${item.eventId}]`}`;
+    return `> “${quote}”${author}${link ? ` ([mensagem](${link}))` : ''}`;
   }).join('\n');
   const section = (title, items, format) => `## ${title}\n\n${items.length ? items.map((item) => `${format(item)}\n\n${evidence(item.evidence)}`).join('\n\n') : 'Sem evidências suficientes para registrar.'}`;
   const context = metadata.context ?? {};
@@ -126,7 +129,7 @@ export function renderMemoryMarkdown({ analysis, events, metadata }) {
     `- Configuração do analisador: \`${metadata.analyzerConfigHash ?? '1'}\``,
     `- Backend/modelo: ${metadata.backend ?? 'desconhecido'} / ${metadata.model ?? 'padrão'}`,
     `- Analisador: ${metadata.analyzerVersion ?? '1'}; gerado em ${metadata.generatedAt ?? new Date().toISOString()}`,
-    `- Cobertura: ${coverage.messageCount ?? messages.length} mensagens, ${coverage.generationCount ?? countType(events, 'generation_start')} gerações, ${coverage.eventCount ?? events.length} eventos; captura ${coverage.captureComplete === false ? 'parcial' : 'da fonte disponível'}`,
+    `- Cobertura: ${coverage.messageCount ?? messages.length} mensagens; captura ${coverage.captureComplete === false ? 'parcial' : 'da fonte disponível'}`,
     `- Contexto auxiliar congelado: ${context.previous?.count ?? 0} mensagens de ${context.previous?.date ?? 'dia anterior indisponível'}; ${context.next?.count ?? 0} mensagens de ${context.next?.date ?? 'dia posterior indisponível'}${context.frozenAt ? ` (congelado em ${context.frozenAt})` : ''}`,
     `- Lacunas conhecidas: ${(coverage.gaps ?? []).length ? coverage.gaps.join('; ') : 'nenhuma registrada'}`,
     '',
@@ -470,8 +473,6 @@ function discordLink(event, metadata) {
   const channelId = event?.channelId ?? event?.sourceChannelId ?? metadata.channelId;
   return guildId && channelId && messageId ? `https://discord.com/channels/${guildId}/${channelId}/${messageId}` : null;
 }
-
-function countType(events, type) { return events.filter((event) => event.type === type).length; }
 
 function emptyAnalysis() {
   return { summary: 'Nenhuma mensagem foi capturada neste dia.', topics: [], interactions: [], worked: [], failed: [], promptChanges: [], codeChanges: [], limitations: ['Sem mensagens disponíveis para análise.'] };

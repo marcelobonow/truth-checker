@@ -98,7 +98,7 @@ export const CONVERSATION = {
   analysisBackend: process.env.CONVERSATION_ANALYSIS_BACKEND?.trim() || null,
   archiveDir: process.env.CONVERSATION_ARCHIVE_DIR?.trim() || 'conversas',
   memoriesDir: process.env.CONVERSATION_MEMORIES_DIR?.trim() || 'memorias-conversas',
-  timeZone: process.env.CONVERSATION_TIME_ZONE?.trim() || 'America/Sao_Paulo',
+  timeZone: process.env.CONVERSATION_TIME_ZONE?.trim() || 'Etc/GMT+3',
   neighborMessages: 20,
   maxQueueBytes: 8_000_000,
   maxInputChars: 40_000,
