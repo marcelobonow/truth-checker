@@ -92,15 +92,48 @@ export function validateStructuredAnalysis(value, events) {
   const sourceById = new Map();
   for (const event of events) {
     const ids = [event.analysisRef, event.eventId, event.messageId, event.generationId, event.mediaAnalysisId].filter(Boolean).map(String);
-    const text = evidenceText(event);
-    for (const id of ids) sourceById.set(id, `${sourceById.get(id) ?? ''}\n${text}`);
+    const parts = evidenceParts(event);
+    const text = parts.join('\n');
+    for (const id of ids) {
+      const previous = sourceById.get(id);
+      sourceById.set(id, {
+        text: `${previous?.text ?? ''}\n${text}`,
+        parts: [...(previous?.parts ?? []), ...parts],
+      });
+    }
   }
   for (const evidence of findEvidence(analysis)) {
     const source = sourceById.get(String(evidence.eventId));
     if (source == null) throw new Error(`evidência ${evidence.eventId} está fora da entrada`);
-    if (!source.includes(evidence.quote)) throw new Error(`citação da evidência ${evidence.eventId} não confere com a fonte`);
+    if (!source.text.includes(evidence.quote)) {
+      // Alguns modelos normalizam espaços duplicados ou quebras de linha ao
+      // copiar uma citação. Aceite somente diferenças de whitespace e troque
+      // a citação pelo trecho literal da fonte antes de persistir a análise.
+      const exactQuote = source.parts
+        .map((part) => findWhitespaceEquivalent(part, evidence.quote))
+        .find((quote) => quote != null);
+      if (exactQuote != null) {
+        evidence.quote = exactQuote;
+        continue;
+      }
+      const error = new Error(`citação da evidência ${evidence.eventId} não confere com a fonte`);
+      error.evidenceEventId = String(evidence.eventId);
+      error.evidenceQuote = evidence.quote.slice(0, 300);
+      error.evidenceQuoteLength = Array.from(evidence.quote).length;
+      error.evidenceSourceLength = Array.from(source.text).length;
+      error.evidenceSourcePreview = source.text.slice(0, 500);
+      throw error;
+    }
   }
   return analysis;
+}
+
+function findWhitespaceEquivalent(source, quote) {
+  const parts = quote.trim().split(/\s+/u);
+  if (!parts.length || !parts[0]) return null;
+  const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const match = new RegExp(escaped.join('\\s+'), 'u').exec(source);
+  return match?.[0] ?? null;
 }
 
 export function renderMemoryMarkdown({ analysis, events, metadata }) {
@@ -158,24 +191,231 @@ export function renderMemoryMarkdown({ analysis, events, metadata }) {
   ].join('\n');
 }
 
-export async function runAnalysisChunks({ events, workDir, call, lookup, maxChars = 60_000, overlapMessages = 5, maxCalls = 100, maxLookupQueries = 20, maxLookupBytes = 32_000, maxReadRounds = 3, timeZone = 'America/Sao_Paulo', shouldContinue = () => true, onCall = async () => {} }) {
+/**
+ * Analisa a conversa em uma execução orientada pelo arquivo. O modelo recebe
+ * um caminho e usa read_file para consultar o JSONL sob demanda; o agendador
+ * não divide a conversa em chamadas nem pede consolidação de blocos.
+ */
+export async function runAnalysisFromFile({ events, workDir, call, maxCalls = 100, timeZone = 'America/Sao_Paulo', metadata = {}, shouldContinue = () => true, onCall = async () => {}, onProgress = async () => {} }) {
+  if (typeof call !== 'function') throw new TypeError('call é obrigatório');
+  if (!Number.isInteger(maxCalls) || maxCalls < 0) throw new RangeError('maxCalls deve ser inteiro não negativo');
+  await fs.mkdir(workDir, { recursive: true });
+  const modelWorkDir = path.resolve(workDir, 'analysis-inputs');
+  await fs.mkdir(modelWorkDir, { recursive: true });
+  const conversationFile = path.join(modelWorkDir, 'conversation.jsonl');
+  const allEvents = [];
+  const inputStats = await writeAnalysisInput(events, conversationFile, allEvents);
+  if (allEvents.length === 0) return { complete: true, callsUsed: 0, analysis: emptyAnalysis() };
+
+  await onProgress({ phase: 'analysis_file_ready', conversationFile, ...inputStats });
+  const basePrompt = JSON.stringify({
+    phase: 'analyze_conversation',
+    conversationFile,
+    format: 'JSONL: cada evento começa com um registro event; textos vêm em registros text com analysisRef, campo e parte. Paginar o arquivo até o fim quando necessário.',
+    metadata: { ...metadata, timeZone },
+    ...inputStats,
+  });
+  let callsUsed = 0;
+  const invoke = async (prompt, phase) => {
+    if (callsUsed >= maxCalls || !shouldContinue()) return null;
+    await onCall();
+    const callNumber = callsUsed + 1;
+    const startedAt = Date.now();
+    await onProgress({ phase: 'model_call_started', modelPhase: phase, callNumber, callsUsed });
+    try {
+      const output = await call(prompt, { phase, workDir: modelWorkDir, conversationFile });
+      callsUsed++;
+      await onProgress({ phase: 'model_call_completed', modelPhase: phase, callNumber, callsUsed, durationMs: Date.now() - startedAt, outputChars: String(output ?? '').length });
+      return output;
+    } catch (error) {
+      await onProgress({ phase: 'model_call_failed', modelPhase: phase, callNumber, callsUsed, durationMs: Date.now() - startedAt, error: String(error.message ?? error).slice(0, 300) });
+      throw error;
+    }
+  };
+
+  let output = await invoke(basePrompt, 'analysis');
+  if (output == null) return { complete: false, callsUsed, phase: 'analysis' };
+  for (let repair = 0; repair <= 2; repair++) {
+    let analysis;
+    let candidate;
+    let error;
+    try {
+      candidate = parseJson(output);
+      analysis = normalizeEvidenceRefs(validateStructuredAnalysis(candidate, allEvents), allEvents);
+    } catch (caught) {
+      error = caught;
+    }
+    if (analysis) {
+      await onProgress({ phase: 'completed', callsUsed, analysis });
+      return { complete: true, callsUsed, analysis };
+    }
+    if (repair >= 2) {
+      if (error.message === 'evidência precisa conter eventId e quote' && sanitizeMalformedEvidence(candidate)) {
+        analysis = normalizeEvidenceRefs(validateStructuredAnalysis(candidate, allEvents), allEvents);
+        await onProgress({ phase: 'completed', callsUsed, analysis });
+        return { complete: true, callsUsed, analysis };
+      }
+      throw error;
+    }
+    const previousResponseFile = path.join(modelWorkDir, 'previous-response.txt');
+    await fs.writeFile(previousResponseFile, String(output), 'utf8');
+    await onProgress({ phase: 'analysis_repair', reason: error.message, repairNumber: repair + 1 });
+    output = await invoke(`${basePrompt}\n\nA resposta anterior está em ${JSON.stringify(previousResponseFile)}. Leia-a e corrija somente os problemas de validação; consulte a conversa novamente apenas onde precisar verificar as evidências. Não refaça a análise inteira.\n${repairInstruction(error)}`, 'repair');
+    if (output == null) return { complete: false, callsUsed, phase: 'repair' };
+  }
+  throw new Error('não foi possível validar a resposta da análise');
+}
+
+async function writeAnalysisInput(source, file, collectedEvents) {
+  const handle = await fs.open(file, 'w');
+  let eventCount = 0;
+  let messageCount = 0;
+  let lineCount = 0;
+  let byteCount = 0;
+  try {
+    const iterator = source[Symbol.asyncIterator]?.() ?? source[Symbol.iterator]?.();
+    if (!iterator) throw new TypeError('events deve ser iterável');
+    for await (const event of { [Symbol.asyncIterator]: () => iterator }) {
+      eventCount++;
+      const analysisRef = event.analysisRef ?? event.eventId ?? `event-${eventCount}`;
+      const indexedEvent = event.analysisRef ? event : { ...event, analysisRef };
+      collectedEvents.push(indexedEvent);
+      if (event.type === 'message') messageCount++;
+      const header = {
+        recordType: 'event',
+        analysisRef,
+        eventId: event.eventId ?? null,
+        type: event.type ?? null,
+        createdAt: event.createdAt ?? event.observedAt ?? null,
+        sourceRole: event.sourceRole ?? event.contextRole ?? null,
+        authorName: event.authorName ?? null,
+        authorId: event.authorId ?? null,
+        mentions: event.mentions ?? false,
+        messageId: event.messageId ?? null,
+        reference: event.reference?.messageId ? { messageId: event.reference.messageId } : null,
+        status: event.status ?? null,
+        outcome: event.outcome ?? null,
+        kind: event.kind ?? null,
+      };
+      const lines = [JSON.stringify(header)];
+      for (const { field, value } of analysisTextFields(event)) {
+        lines.push(...textRecordLines(header.analysisRef, header.eventId, field, value));
+      }
+      const serialized = `${lines.join('\n')}\n`;
+      lineCount += lines.length;
+      byteCount += Buffer.byteLength(serialized);
+      await handle.writeFile(serialized, 'utf8');
+    }
+  } finally {
+    await handle.close();
+  }
+  return { eventCount, messageCount, lineCount, byteCount };
+}
+
+function analysisTextFields(event) {
+  const fields = [];
+  const names = ['content', 'cleanContent', 'text', 'output', 'response', 'description', 'transcript', 'error', 'prompt', 'systemPrompt', 'quote', 'reason', 'decision', 'stage', 'status', 'outcome', 'kind', 'generatedText', 'deliveredText', 'deliveryError', 'sourceAuthorName'];
+  for (const field of names) {
+    const value = event[field];
+    if (typeof value === 'string' && value.length > 0) {
+      if (field === 'cleanContent' && value === event.content) continue;
+      fields.push({ field, value });
+    }
+  }
+  for (const [index, item] of (event.deliveredMessages ?? []).entries()) {
+    if (typeof item.content === 'string' && item.content.length > 0) fields.push({ field: `deliveredMessages[${index}].content`, value: item.content });
+  }
+  for (const [index, attachment] of (event.attachments ?? []).entries()) {
+    if (typeof attachment.name === 'string' && attachment.name) fields.push({ field: `attachments[${index}].name`, value: attachment.name });
+  }
+  for (const [index, embed] of (event.embeds ?? []).entries()) {
+    for (const field of ['title', 'description']) if (typeof embed[field] === 'string' && embed[field]) fields.push({ field: `embeds[${index}].${field}`, value: embed[field] });
+    for (const [fieldIndex, item] of (embed.fields ?? []).entries()) {
+      for (const field of ['name', 'value']) if (typeof item[field] === 'string' && item[field]) fields.push({ field: `embeds[${index}].fields[${fieldIndex}].${field}`, value: item[field] });
+    }
+  }
+  const seen = new Set();
+  return fields.filter(({ value }) => {
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function textRecordLines(analysisRef, eventId, field, value) {
+  const chars = Array.from(value);
+  const records = [];
+  for (let offset = 0; offset < chars.length;) {
+    let end = Math.min(chars.length, offset + 700);
+    let line;
+    while (end > offset) {
+      const record = { recordType: 'text', analysisRef, eventId: eventId ?? null, field, offset, text: chars.slice(offset, end).join('') };
+      line = JSON.stringify(record);
+      if (Buffer.byteLength(line) <= 1_500) break;
+      end = offset + Math.floor((end - offset) / 2);
+    }
+    if (end === offset) throw new Error(`não foi possível serializar texto do evento ${analysisRef}`);
+    records.push(line);
+    offset = end;
+  }
+  return records;
+}
+
+// Mantido para consumidores e testes legados; a execução agendada usa
+// runAnalysisFromFile e não chama o pipeline de blocos/consolidação abaixo.
+export async function runAnalysisChunks({ events, workDir, sourceSnapshot = null, call, lookup, maxChars = 60_000, overlapMessages = 5, maxCalls = 100, maxLookupQueries = 20, maxLookupBytes = 32_000, maxReadRounds = 3, timeZone = 'America/Sao_Paulo', shouldContinue = () => true, onCall = async () => {}, onProgress = async () => {} }) {
   if (typeof call !== 'function') throw new TypeError('call é obrigatório');
   if (!Number.isInteger(maxChars) || maxChars < 200) throw new RangeError('maxChars deve ser ao menos 200');
   await fs.mkdir(workDir, { recursive: true });
+  const modelWorkDir = path.join(workDir, 'analysis-inputs');
+  await fs.mkdir(modelWorkDir, { recursive: true });
+  const conversationFile = sourceSnapshot ? path.join(modelWorkDir, 'conversation.jsonl') : null;
+  if (sourceSnapshot) await fs.copyFile(sourceSnapshot, conversationFile);
   let callsUsed = 0;
   let lookupQueriesUsed = 0;
   const baseFiles = [];
-  const chunkBudget = Math.max(200, Math.floor(maxChars * 0.45));
+  const chunkBudget = Math.max(200, Math.floor(maxChars * 0.60));
+  const invoke = async (prompt, request) => {
+    const { workDir: requestedWorkDir, ...progressRequest } = request;
+    const callOptions = { ...progressRequest, workDir: requestedWorkDir ?? modelWorkDir };
+    await onCall();
+    const callNumber = callsUsed + 1;
+    const startedAt = Date.now();
+    await onProgress({ ...progressRequest, phase: 'model_call_started', modelPhase: request.phase, callNumber, callsUsed });
+    try {
+      const output = await call(prompt, callOptions);
+      callsUsed++;
+      await onProgress({ ...progressRequest, phase: 'model_call_completed', modelPhase: request.phase, callNumber, callsUsed, durationMs: Date.now() - startedAt, outputChars: String(output ?? '').length });
+      return output;
+    } catch (error) {
+      await onProgress({ ...progressRequest, phase: 'model_call_failed', modelPhase: request.phase, callNumber, callsUsed, durationMs: Date.now() - startedAt, error: String(error.message ?? error).slice(0, 300) });
+      throw error;
+    }
+  };
   for await (const chunk of chunkEvents(events, { maxChars: chunkBudget, overlapMessages })) {
     const file = path.join(workDir, `chunk-${String(chunk.index).padStart(8, '0')}.json`);
     baseFiles.push(file);
-    if (await validChunkCheckpoint(file, chunk)) continue;
+    const messageCount = chunk.events.filter((event) => event.type === 'message').length;
+    if (await validChunkCheckpoint(file, chunk)) {
+      await onProgress({ phase: 'chunk_checkpoint_reused', chunkIndex: chunk.index + 1, eventCount: chunk.events.length, messageCount });
+      continue;
+    }
+    await onProgress({ phase: 'chunk_started', chunkIndex: chunk.index + 1, eventCount: chunk.events.length, messageCount, callsUsed });
     await Promise.all([fs.rm(file, { force: true }), fs.rm(`${file}.checkpoint.json`, { force: true })]);
     for (const name of await fs.readdir(workDir)) if (/^merge-\d+-\d+\.json$/.test(name)) await fs.rm(path.join(workDir, name), { force: true });
     if (callsUsed >= maxCalls) return { complete: false, callsUsed, phase: 'chunks' };
     const timeline = compactTimeline(chunk.events, { timeZone });
     const checkpoint = chunk.index === 0 ? null : await readPreviousCheckpoint(workDir, chunk.index - 1, maxChars);
-    const basePrompt = { phase: 'analyze_chunk', coveredRefs: chunk.events.map((event) => event.analysisRef ?? event.eventId), checkpoint, timeline };
+    const blockFile = path.join(modelWorkDir, `chunk-${String(chunk.index).padStart(8, '0')}.jsonl`);
+    await fs.writeFile(blockFile, `${chunk.events.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+    const basePrompt = {
+      phase: 'analyze_chunk',
+      conversationFile,
+      blockFile,
+      coveredRefs: chunk.events.map((event) => event.analysisRef ?? event.eventId),
+      checkpoint,
+      timeline,
+    };
     const readHistory = [];
     const readEvents = [];
     let readRounds = 0;
@@ -185,16 +425,13 @@ export async function runAnalysisChunks({ events, workDir, call, lookup, maxChar
       if (callsUsed >= maxCalls || !shouldContinue()) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'chunks' };
       const prompt = JSON.stringify({ ...basePrompt, reads: readHistory, forceFinal });
       if (Buffer.byteLength(prompt) > maxChars) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'input_budget' };
-      await onCall();
-      let output = await call(prompt, { phase: readHistory.length ? 'lookup_followup' : 'chunk', index: chunk.index });
-      callsUsed++;
+      const request = { phase: readHistory.length ? 'lookup_followup' : 'chunk', index: chunk.index, workDir: modelWorkDir };
+      let output = await invoke(prompt, request);
       let value;
       try { value = parseJson(output); }
       catch (error) {
         if (callsUsed >= maxCalls) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'repair' };
-        await onCall();
-        output = await call(`${prompt}\n\nSua resposta anterior era inválida (${error.message}). Retorne somente JSON válido, sem inventar evidências.`, { phase: 'repair', index: chunk.index });
-        callsUsed++;
+        output = await invoke(`${prompt}\n\nSua resposta anterior era inválida (${error.message}). Retorne somente JSON válido, sem inventar evidências.`, { phase: 'repair', index: chunk.index, workDir: modelWorkDir });
         value = parseJson(output);
       }
       if (Array.isArray(value.readRequests)) {
@@ -239,13 +476,28 @@ export async function runAnalysisChunks({ events, workDir, call, lookup, maxChar
         readHistory.push(...results);
         continue;
       }
-      try { analysis = normalizeEvidenceRefs(validateStructuredAnalysis(value, [...chunk.events, ...readEvents]), [...chunk.events, ...readEvents]); }
-      catch (firstError) {
-        if (callsUsed >= maxCalls) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'repair' };
-        await onCall();
-        output = await call(`${prompt}\n\nSua resposta anterior foi inválida: ${firstError.message}. Retorne somente JSON válido e use apenas os refs/citações presentes nos dados.`, { phase: 'repair', index: chunk.index });
-        callsUsed++;
-        analysis = normalizeEvidenceRefs(validateStructuredAnalysis(parseAnalysisResponse(output), [...chunk.events, ...readEvents]), [...chunk.events, ...readEvents]);
+      let validationRepairs = 0;
+      let parseRepairedOutput = false;
+      while (!analysis) {
+        try {
+          if (parseRepairedOutput) {
+            value = parseJson(output);
+            parseRepairedOutput = false;
+          }
+          analysis = normalizeEvidenceRefs(validateStructuredAnalysis(value, [...chunk.events, ...readEvents]), [...chunk.events, ...readEvents]);
+        } catch (error) {
+          if (callsUsed >= maxCalls) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'repair' };
+          if (validationRepairs >= 2) {
+            if (error.message === 'evidência precisa conter eventId e quote' && sanitizeMalformedEvidence(value)) {
+              analysis = normalizeEvidenceRefs(validateStructuredAnalysis(value, [...chunk.events, ...readEvents]), [...chunk.events, ...readEvents]);
+              break;
+            }
+            throw error;
+          }
+          validationRepairs++;
+          output = await invoke(`${prompt}\n\n${repairInstruction(error)}`, { phase: 'repair', index: chunk.index, workDir: modelWorkDir });
+          parseRepairedOutput = true;
+        }
       }
     }
     await atomicJson(file, analysis);
@@ -255,6 +507,7 @@ export async function runAnalysisChunks({ events, workDir, call, lookup, maxChar
       lookupQueries: readHistory, lookupResults: readEvents,
       completedAt: new Date().toISOString(),
     });
+    await onProgress({ phase: 'chunk_completed', chunkIndex: chunk.index + 1, eventCount: chunk.events.length, messageCount, callsUsed, lookupQueriesUsed, analysis });
   }
   if (baseFiles.length === 0) return { complete: true, callsUsed, lookupQueriesUsed, analysis: emptyAnalysis() };
 
@@ -271,25 +524,35 @@ export async function runAnalysisChunks({ events, workDir, call, lookup, maxChar
       if (group.length === 1) { await fs.copyFile(group[0], outputFile); continue; }
       if (callsUsed >= maxCalls || !shouldContinue()) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'merge' };
       const analyses = await Promise.all(group.map((file) => fs.readFile(file, 'utf8').then(JSON.parse)));
+      await onProgress({ phase: 'merge_started', level: level + 1, groupIndex: i + 1, groupCount: groups.length, callsUsed });
       const allowed = analyses.flatMap(findEvidence).reduce((list, item) => {
         const previous = list.find((entry) => entry.eventId === item.eventId && entry.quote === item.quote);
         if (!previous) list.push(item);
         return list;
       }, []);
-      const prompt = JSON.stringify({ phase: 'consolidate', analyses, allowedEvidence: allowed });
-      await onCall();
-      let output = await call(prompt, { phase: 'merge', level, index: i });
-      callsUsed++;
+      const prompt = JSON.stringify({ phase: 'consolidate', conversationFile, analyses, allowedEvidence: allowed });
+      let output = await invoke(prompt, { phase: 'merge', level, index: i, workDir: modelWorkDir });
       let analysis;
-      try { analysis = validateStructuredAnalysis(parseAnalysisResponse(output), allowed.map((item) => ({ eventId: item.eventId, content: item.quote }))); }
-      catch (firstError) {
-        if (callsUsed >= maxCalls) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'repair' };
-        await onCall();
-        output = await call(`${prompt}\n\nSua resposta anterior foi inválida: ${firstError.message}. Retorne somente JSON válido e use apenas as evidências permitidas.`, { phase: 'repair', level, index: i });
-        callsUsed++;
-        analysis = validateStructuredAnalysis(parseAnalysisResponse(output), allowed.map((item) => ({ eventId: item.eventId, content: item.quote })));
+      let validationRepairs = 0;
+      while (!analysis) {
+        try {
+          analysis = validateStructuredAnalysis(parseJson(output), allowed.map((item) => ({ eventId: item.eventId, content: item.quote })));
+        } catch (error) {
+          if (callsUsed >= maxCalls) return { complete: false, callsUsed, lookupQueriesUsed, phase: 'repair' };
+          if (validationRepairs >= 2) {
+            const candidate = parseJson(output);
+            if (error.message === 'evidência precisa conter eventId e quote' && sanitizeMalformedEvidence(candidate)) {
+              analysis = validateStructuredAnalysis(candidate, allowed.map((item) => ({ eventId: item.eventId, content: item.quote })));
+              break;
+            }
+            throw error;
+          }
+          validationRepairs++;
+          output = await invoke(`${prompt}\n\n${repairInstruction(error)}`, { phase: 'repair', level, index: i, workDir: modelWorkDir });
+        }
       }
       await atomicJson(outputFile, analysis);
+      await onProgress({ phase: 'merge_completed', level: level + 1, groupIndex: i + 1, groupCount: groups.length, callsUsed, analysis });
     }
     inputs = outputs;
     level++;
@@ -447,7 +710,7 @@ function validateShape(value) {
   }
   if (value.limitations.some((item) => typeof item !== 'string' || !item.trim())) throw new Error('limitations deve conter textos não vazios');
   for (const evidence of findEvidence(value)) {
-    if (!EVIDENCE_KEYS.every((key) => typeof evidence[key] === 'string' && evidence[key].trim())) throw new Error('evidência precisa conter eventId e quote');
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence) || !EVIDENCE_KEYS.every((key) => typeof evidence[key] === 'string' && evidence[key].trim())) throw new Error('evidência precisa conter eventId e quote');
     if (Array.from(evidence.quote).length > 300) throw new Error('citação excede 300 caracteres');
   }
   return value;
@@ -461,10 +724,53 @@ function* findEvidence(value) {
 }
 
 function evidenceText(event) {
-  return ['content', 'cleanContent', 'text', 'output', 'response', 'description', 'transcript', 'error', 'prompt', 'quote']
+  return evidenceParts(event).join('\n');
+}
+
+function evidenceParts(event) {
+  const parts = ['content', 'cleanContent', 'text', 'output', 'response', 'description', 'transcript', 'error', 'prompt', 'systemPrompt', 'quote', 'reason', 'decision', 'stage', 'status', 'outcome', 'kind', 'generatedText', 'deliveredText', 'deliveryError', 'sourceAuthorName']
     .map((key) => typeof event[key] === 'string' ? event[key] : '')
     .concat((event.deliveredMessages ?? []).map((item) => typeof item.content === 'string' ? item.content : ''))
-    .join('\n');
+    .concat((event.attachments ?? []).map((item) => typeof item.name === 'string' ? item.name : ''))
+    .concat((event.embeds ?? []).flatMap((item) => [item.title, item.description, ...(item.fields ?? []).flatMap((field) => [field.name, field.value])].filter((value) => typeof value === 'string')));
+  return parts;
+}
+
+function repairInstruction(error) {
+  if (error.message === 'evidência precisa conter eventId e quote') {
+    return 'Sua resposta contém ao menos uma evidência incompleta. Refaça a análise em JSON válido e garanta que CADA item de evidence seja um objeto com eventId e quote, ambos strings não vazias. Se não conseguir citar uma fonte corretamente, remova a observação sem suporte.';
+  }
+  if (error.evidenceEventId) {
+    const rejected = JSON.stringify({
+      eventId: error.evidenceEventId,
+      rejectedQuote: error.evidenceQuote,
+      literalSource: error.evidenceSourcePreview,
+    });
+    return `A validação rejeitou uma citação porque ela não é um trecho literal da fonte. Corrija a análise anterior usando apenas citações copiadas exatamente, preservando menções, IDs, espaços e pontuação. Se não houver um trecho literal que sustente uma conclusão, remova essa conclusão. Diagnóstico: ${rejected}\nRetorne somente JSON válido.`;
+  }
+  return `Sua resposta anterior foi inválida: ${error.message}. Retorne somente JSON válido e use apenas refs/citações presentes nos dados.`;
+}
+
+function sanitizeMalformedEvidence(analysis) {
+  if (!analysis || typeof analysis !== 'object' || Array.isArray(analysis) || !Array.isArray(analysis.limitations)) return 0;
+  let droppedEvidence = 0;
+  let droppedItems = 0;
+  for (const field of ['topics', 'interactions', 'worked', 'failed', 'promptChanges', 'codeChanges']) {
+    if (!Array.isArray(analysis[field])) continue;
+    analysis[field] = analysis[field].filter((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return true;
+      if (!Array.isArray(item.evidence)) { droppedItems++; return false; }
+      const valid = item.evidence.filter((evidence) => evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+        && typeof evidence.eventId === 'string' && evidence.eventId.trim()
+        && typeof evidence.quote === 'string' && evidence.quote.trim());
+      droppedEvidence += item.evidence.length - valid.length;
+      if (valid.length === 0) { droppedItems++; return false; }
+      item.evidence = valid;
+      return true;
+    });
+  }
+  if (droppedEvidence || droppedItems) analysis.limitations.push(`${droppedItems} observação(ões) foram removidas e ${droppedEvidence} citação(ões) descartadas porque a resposta do modelo trouxe evidência incompleta.`);
+  return droppedEvidence + droppedItems;
 }
 
 function discordLink(event, metadata) {

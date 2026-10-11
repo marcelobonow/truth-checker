@@ -20,15 +20,19 @@ export function buildArgs({ mode, sessionId, workDir, model, effort, imageFile }
   if (workDir && !sessionId) args.push('--cd', workDir);
   if (model) args.push('--model', model);
   if (effort) args.push('--config', `model_reasoning_effort=${JSON.stringify(effort)}`);
-  args.push('--config', `web_search=${JSON.stringify(['vision', 'analysis'].includes(mode) ? 'disabled' : 'live')}`);
+  args.push('--config', `web_search=${JSON.stringify(mode === 'vision' ? 'disabled' : 'live')}`);
   args.push('--disable', 'apps', '--disable', 'multi_agent');
 
   if (mode === 'full') {
     // O modo full só é liberado pelo bot nos servidores configurados.
     args.push('--dangerously-bypass-approvals-and-sandbox');
+  } else if (mode === 'analysis') {
+    // A análise lê apenas os snapshots dentro de um cwd isolado; shell fica
+    // disponível em sandbox somente leitura para abrir esses arquivos.
+    args.push('--config', `sandbox_mode=${JSON.stringify('read-only')}`);
   } else {
-    // Sem shell/ferramentas locais no web e na visão: web usa apenas web_search;
-    // visão recebe a imagem diretamente pela flag --image.
+    // Sem shell/ferramentas locais no web e na visão; visão recebe a imagem
+    // diretamente pela flag --image.
     args.push('--config', `sandbox_mode=${JSON.stringify('read-only')}`, '--disable', 'shell_tool');
   }
 

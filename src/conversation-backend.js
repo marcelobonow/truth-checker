@@ -1,9 +1,13 @@
 import { createBackendMetricHandler } from './monitor-events.js';
+import { createQueue } from './queue.js';
 
-export function createConversationBackendCaller({ backend, config, queue, monitor = null, now = Date.now }) {
+// Prioridade baixa não libera uma fila serial quando a análise já começou.
+// Use uma fila própria para não bloquear as respostas ao vivo por minutos.
+export function createConversationBackendCaller({ backend, config, queue = createQueue(), monitor = null, now = Date.now }) {
   if (!backend?.buildRequest || !backend?.run || !queue?.add) throw new TypeError('backend e queue são obrigatórios');
-  return (prompt, { signal } = {}) => queue.add(async () => {
+  return (prompt, options = {}) => queue.add(async () => {
     const startedAt = now();
+    const workDir = options.workDir ?? config.workDir;
     const model = config.model?.analysis ?? null;
     const generationId = monitor?.startGeneration({
       startedAt, backend: backend.name, mode: 'analysis', model,
@@ -14,11 +18,11 @@ export function createConversationBackendCaller({ backend, config, queue, monito
       : null;
     try {
       const request = backend.buildRequest({
-        mode: 'analysis', workDir: config.workDir, extraPrompt: config.extraPrompt?.analysis,
+        mode: 'analysis', workDir, extraPrompt: config.extraPrompt?.analysis,
         model, effort: config.effort?.analysis, prompt,
       });
       const result = await backend.run({
-        ...request, cwd: config.workDir, bin: config.bin, timeoutMs: config.timeoutMs, signal,
+        ...request, cwd: workDir, bin: config.bin, timeoutMs: config.timeoutMs, signal: options.signal,
         onEvent: metrics ? (event, metadata) => metrics(event, metadata) : undefined,
       });
       if (metrics && !metrics.hasTokenEvents()) {

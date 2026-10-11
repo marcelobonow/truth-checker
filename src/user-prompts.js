@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
+import { MessageFlags } from 'discord.js';
+import { splitMessage } from './split.js';
 
 export const MAX_USER_PROMPT_LENGTH = 2000;
 
@@ -43,20 +45,29 @@ export function createUserPromptStore(filePath, { onError = console.error } = {}
   };
 }
 
-export function formatPromptListPages(rows) {
-  if (rows.length === 0) return ['Ninguém definiu um prompt personalizado.'];
-  const pages = [];
-  let page = 'Quem definiu um prompt personalizado:';
-  for (const { userId, prompt } of rows) {
-    const characters = Array.from(prompt.replace(/\s+/g, ' '));
-    const preview = characters.slice(0, 25).join('').replace(/[\\*_`~|>]/g, '\\$&');
-    const line = `\n- <@${userId}> → ${preview}${characters.length > 25 ? '…' : ''}`;
-    if (page.length + line.length > 2000) {
-      pages.push(page);
-      page = 'Continuação:';
-    }
-    page += line;
+export function formatPromptList(rows) {
+  if (rows.length === 0) return 'Ninguém definiu um prompt personalizado.';
+  return 'Prompts personalizados completos:\n\n'
+    + rows.map(({ userId, prompt }) => `<@${userId}>:\n${prompt}`).join('\n\n');
+}
+
+export async function replyPromptList(interaction, rows, { onError = () => {} } = {}) {
+  const content = formatPromptList(rows);
+  const allowedMentions = { parse: [] };
+  if (content.length <= 2000) {
+    await interaction.reply({ content, allowedMentions, flags: MessageFlags.Ephemeral });
+    return;
   }
-  pages.push(page);
-  return pages;
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    for (const part of splitMessage(content)) {
+      await interaction.user.send({ content: part, allowedMentions });
+    }
+  } catch (error) {
+    onError(error);
+    await interaction.editReply({ content: 'Não consegui enviar a lista completa no privado. Habilite mensagens diretas deste servidor e tente /prompt-list novamente.', allowedMentions });
+    return;
+  }
+  await interaction.editReply({ content: 'Enviei os prompts completos no seu privado.', allowedMentions });
 }

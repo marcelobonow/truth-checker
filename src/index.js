@@ -1,3 +1,4 @@
+import './environment.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -15,13 +16,12 @@ import { fetchUsage, formatUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { createModelStore, DEFAULT_MODEL_CHOICE, formatModelList, normalizeChoices, choiceValue, choiceName } from './models.js';
-import { createUserPromptStore, formatPromptListPages, MAX_USER_PROMPT_LENGTH } from './user-prompts.js';
+import { createUserPromptStore, replyPromptList, MAX_USER_PROMPT_LENGTH } from './user-prompts.js';
 import { createDisabledMonitor, createMonitor } from './monitor.js';
 import { createBackendMetricHandler } from './monitor-events.js';
 import { createConversationArchive, localDateInZone } from './conversation-archive.js';
 import { createConversationScheduler } from './conversation-scheduler.js';
-import { createConversationLookup } from './conversation-lookup.js';
-import { runAnalysisChunks } from './conversation-analysis.js';
+import { runAnalysisFromFile } from './conversation-analysis.js';
 import { createConversationBackendCaller } from './conversation-backend.js';
 import { createConversationCron, parseScheduledDateTime, truncateDiscordContent } from './conversation-cron.js';
 import { systemPrompt } from './prompts.js';
@@ -123,15 +123,12 @@ const conversationConfig = {
   timeoutMs: Number(env.CONVERSATION_ANALYSIS_TIMEOUT_MS) || config.timeoutMs,
 };
 const analysisSystemPrompt = systemPrompt({ mode: 'analysis', workDir: ROOT });
-const analysisInputBudget = Math.max(200, CONVERSATION.maxInputChars - Buffer.byteLength(analysisSystemPrompt));
 const analyzerConfigHash = crypto.createHash('sha256').update(JSON.stringify({
-  version: 4, backend: analysisBackend.name, model: conversationConfig.model.analysis,
+  version: 6, backend: analysisBackend.name, model: conversationConfig.model.analysis,
   effort: conversationConfig.effort.analysis, timeZone: CONVERSATION.timeZone,
-  analysisPrompt: analysisSystemPrompt, analysisInputBudget,
-  maxInputChars: CONVERSATION.maxInputChars, maxLookupQueries: CONVERSATION.maxLookupQueries,
-  maxLookupResults: CONVERSATION.maxLookupResults, maxLookupBytes: CONVERSATION.maxLookupBytes,
-  maxLookupFieldChars: CONVERSATION.maxLookupFieldChars, maxReadRounds: CONVERSATION.maxReadRoundsPerBlock,
-  maxCallsPerAnalysis: CONVERSATION.maxCallsPerAnalysis, overlapMessages: 5,
+  analysisPrompt: analysisSystemPrompt,
+  maxCallsPerAnalysis: CONVERSATION.maxCallsPerAnalysis,
+  analysisInputFormat: 'single-file-jsonl-v1',
 })).digest('hex');
 // O Discord repete TypingStart a cada ~10 s enquanto a pessoa digita: o prazo
 // após "digitando" precisa cobrir esse intervalo, senão o lote fecha no meio.
@@ -193,7 +190,11 @@ const batcher = createBatcher({
   onFlush: (key, items) => {
     const run = inflight.start(key, items);
     Promise.all(items.map((item) => item.ready))
-      .then(() => queue.add(() => processBatch(items, run)))
+      .then(() => {
+        const last = items.at(-1).message;
+        logger.info({ canal: `${last.guild.name} #${last.channel.name}`, autor: displayName(last), naFila: queue.size() }, 'lote pronto: entrando na fila de respostas');
+        return queue.add(() => processBatch(items, run));
+      })
       .catch((err) => logger.error({ err }, 'erro ao preparar anexos do lote'))
       .finally(() => inflight.finish(key, run));
   },
@@ -221,7 +222,7 @@ const conversationArchive = CONVERSATION.captureEnabled || CONVERSATION.analysis
   })
   : null;
 const conversationCaller = CONVERSATION.analysisEnabled
-  ? createConversationBackendCaller({ backend: analysisBackend, config: conversationConfig, queue, monitor })
+  ? createConversationBackendCaller({ backend: analysisBackend, config: conversationConfig, monitor })
   : null;
 const conversationScheduler = conversationArchive && CONVERSATION.analysisEnabled
   ? createConversationScheduler({
@@ -232,27 +233,58 @@ const conversationScheduler = conversationArchive && CONVERSATION.analysisEnable
     neighborMessages: CONVERSATION.neighborMessages,
     maxCallsPerAnalysis: CONVERSATION.maxCallsPerAnalysis,
     maxRetries: CONVERSATION.maxRetries,
+    staleAnalysisAfterMs: CONVERSATION.staleAnalysisAfterMs,
     isJobIdle: (job) => !activeConversationWork.has(`${job.guildId}:${job.channelId}`),
     onComplete: async (job, markdown) => {
       const user = await client.users.fetch(job.requestedBy);
       await user.send({ content: truncateDiscordContent(markdown), allowedMentions: { parse: [] } });
     },
-    analyzerConfigHash,
-    onError: (err, job) => logger.error({ err, guildId: job?.guildId, channelId: job?.channelId, localDate: job?.localDate }, 'falha na análise agendada de conversas'),
-    analyze: async ({ events, context, workDir, sourceSnapshot, lookupStatePath, maxCalls, shouldContinue, onCall, metadata }) => {
-      const lookup = createConversationLookup({
-        targetFile: sourceSnapshot, previousEvents: context.previous, nextEvents: context.next,
-        statePath: lookupStatePath, maxResults: CONVERSATION.maxLookupResults,
-        maxBytes: CONVERSATION.maxLookupBytes, maxQueries: CONVERSATION.maxLookupQueries,
-        maxFieldChars: CONVERSATION.maxLookupFieldChars,
+    onFailure: async (job) => {
+      const user = await client.users.fetch(job.requestedBy);
+      const reason = String(job.lastError ?? 'motivo não informado').slice(0, 300);
+      await user.send({
+        content: `Não consegui concluir a análise de #${job.channelName ?? job.channelId} (${job.localDate}) após ${job.attempts} tentativa(s). Motivo: ${reason}. Você pode iniciar outra tentativa com /analise-conversas.`,
+        allowedMentions: { parse: [] },
       });
-      const result = await runAnalysisChunks({
-        events, workDir, call: conversationCaller, lookup,
-        maxChars: analysisInputBudget, overlapMessages: 5,
-        maxCalls, maxLookupQueries: CONVERSATION.maxLookupQueries,
-        maxLookupBytes: CONVERSATION.maxLookupBytes,
-        maxReadRounds: CONVERSATION.maxReadRoundsPerBlock, timeZone: CONVERSATION.timeZone,
-        shouldContinue, onCall,
+      logger.warn({ tag: 'conversation-analysis', traceId: job.id, guildId: job.guildId, channelId: job.channelId, localDate: job.localDate, attempts: job.attempts }, 'solicitante avisado por DM sobre falha final');
+    },
+    analyzerConfigHash,
+    onError: (err, job) => logger.error({ tag: 'conversation-analysis', traceId: job?.id, err, guildId: job?.guildId, channelId: job?.channelId, localDate: job?.localDate }, 'falha na análise agendada de conversas'),
+    onProgress: (progress, job) => {
+      const detail = { tag: 'conversation-analysis', traceId: job.id, guildId: job.guildId, channelId: job.channelId, canal: job.channelName, servidor: job.guildName, dia: job.localDate };
+      if (progress.phase === 'started') {
+        logger.info({ ...detail, tentativa: job.attempts, scheduledAt: new Date(job.scheduledAt).toISOString() }, 'análise de conversas começou');
+      } else if (progress.phase === 'model_call_started') {
+        logger.info({ ...detail, ...progress }, 'chamada ao modelo iniciada');
+      } else if (progress.phase === 'model_call_completed') {
+        logger.info({ ...detail, ...progress }, 'chamada ao modelo concluída');
+      } else if (progress.phase === 'model_call_failed') {
+        logger.warn({ ...detail, ...progress }, 'chamada ao modelo falhou');
+      } else if (progress.phase === 'analysis_file_ready') {
+        logger.info({ ...detail, ...progress }, 'arquivo completo da conversa preparado para análise');
+      } else if (progress.phase === 'analysis_repair') {
+        logger.warn({ ...detail, ...progress }, 'corrigindo validação da resposta anterior');
+      } else if (progress.phase === 'completed') {
+        const analysis = progress.analysis;
+        const result = analysis ? {
+          resumo: (analysis.summary ?? '').slice(0, 1200),
+          temas: (analysis.topics ?? []).slice(0, 3).map((item) => `${item.name}: ${item.summary}`.slice(0, 300)),
+          interacoes: (analysis.interactions ?? []).slice(0, 3).map((item) => `${item.request} → ${item.outcome}`.slice(0, 300)),
+          funcionou: (analysis.worked ?? []).slice(0, 3).map((item) => item.observation.slice(0, 300)),
+          falhas: (analysis.failed ?? []).slice(0, 3).map((item) => item.observation.slice(0, 300)),
+          mudancasPrompt: (analysis.promptChanges ?? []).slice(0, 3).map((item) => `${item.rule}: ${item.suggestion}`.slice(0, 300)),
+          mudancasCodigo: (analysis.codeChanges ?? []).slice(0, 3).map((item) => `${item.hypothesis} (${item.component})`.slice(0, 300)),
+          limitacoes: (analysis.limitations ?? []).slice(0, 3).map((item) => item.slice(0, 300)),
+        } : undefined;
+        logger.info({ ...detail, ...progress, analysis: result }, 'análise de conversas concluída');
+      } else if (progress.phase === 'incomplete') {
+        logger.warn({ ...detail, ...progress }, 'análise de conversas incompleta');
+      }
+    },
+    analyze: async ({ events, workDir, maxCalls, shouldContinue, onCall, onProgress, metadata }) => {
+      const result = await runAnalysisFromFile({
+        events, workDir, call: conversationCaller, maxCalls,
+        timeZone: CONVERSATION.timeZone, metadata, shouldContinue, onCall, onProgress,
       });
       return { ...result, backend: analysisBackend.name, model: conversationConfig.model.analysis, metadata };
     },
@@ -366,15 +398,15 @@ const COMMANDS = [
     description: 'Abre o editor do seu prompt personalizado',
     contexts: [InteractionContextType.Guild],
   },
-  { name: 'prompt-list', description: 'Lista quem definiu um prompt personalizado', contexts: [InteractionContextType.Guild] },
+  { name: 'prompt-list', description: 'Mostra os prompts personalizados completos', contexts: [InteractionContextType.Guild] },
   ...(conversationScheduler ? [{
     name: 'analise-conversas',
-    description: 'Agenda um resumo das conversas de um canal',
+    description: 'Analisa conversas de um canal agora ou agenda a análise',
     contexts: [InteractionContextType.Guild],
     options: [
-      { type: ApplicationCommandOptionType.String, name: 'data', description: `Data de execução local (${CONVERSATION.timeZone}), YYYY-MM-DD`, required: true },
-      { type: ApplicationCommandOptionType.String, name: 'hora', description: `Hora de execução local (${CONVERSATION.timeZone}), HH:mm`, required: true },
-      { type: ApplicationCommandOptionType.String, name: 'dia', description: 'Dia de conversas a analisar (padrão: hoje)', required: false },
+      { type: ApplicationCommandOptionType.String, name: 'dia', description: 'Dia a analisar (YYYY-MM-DD; padrão: hoje)', required: false },
+      { type: ApplicationCommandOptionType.String, name: 'data', description: `Data local para agendar (${CONVERSATION.timeZone}; YYYY-MM-DD)`, required: false },
+      { type: ApplicationCommandOptionType.String, name: 'hora', description: `Hora para agendar (${CONVERSATION.timeZone}; HH:mm; sem data, hoje)`, required: false },
       {
         type: ApplicationCommandOptionType.Channel, name: 'canal', description: 'Canal a analisar (padrão: este canal)', required: false,
         channelTypes: [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.AnnouncementThread, ChannelType.PublicThread, ChannelType.PrivateThread],
@@ -395,7 +427,7 @@ client.once(Events.ClientReady, async (c) => {
       listJobs: () => conversationScheduler.listScheduledJobs(),
       tick: () => conversationScheduler.tick(),
       timeZone: CONVERSATION.timeZone,
-      onError: (err) => logger.error({ err }, 'cron de análises agendadas falhou'),
+      onError: (err) => logger.error({ tag: 'conversation-analysis', err }, 'cron de análises agendadas falhou'),
     });
     await conversationCron.start();
   }
@@ -552,11 +584,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
     let scheduledAt;
     let localDate;
     try {
-      scheduledAt = parseScheduledDateTime(
-        interaction.options.getString('data', true), interaction.options.getString('hora', true), CONVERSATION.timeZone,
-      );
-      if (scheduledAt <= Date.now()) throw new TypeError('a data e hora de execução precisam estar no futuro');
-      localDate = interaction.options.getString('dia') ?? localDateInZone(interaction.createdTimestamp, CONVERSATION.timeZone);
+      const today = localDateInZone(interaction.createdTimestamp, CONVERSATION.timeZone);
+      localDate = interaction.options.getString('dia') ?? today;
+      let executionDate = interaction.options.getString('data');
+      const executionTime = interaction.options.getString('hora');
+      if (executionTime && !executionDate) executionDate = today;
+      if (executionDate && !executionTime) {
+        throw new TypeError('para agendar, informe também a hora (HH:mm); sem data e hora, a análise começa agora');
+      }
+      if (executionDate) {
+        scheduledAt = parseScheduledDateTime(executionDate, executionTime, CONVERSATION.timeZone);
+        if (scheduledAt <= Date.now()) throw new TypeError('a data e hora de execução precisam estar no futuro');
+      } else {
+        scheduledAt = Date.now();
+      }
     } catch (err) {
       await interaction.reply({ content: err.message, ...ephemeral });
       return;
@@ -568,12 +609,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
         guildId: interaction.guildId, channelId: channel.id, localDate, scheduledAt,
         requestedBy: interaction.user.id, guildName: interaction.guild.name, channelName: channel.name,
       });
-      await conversationCron?.refresh();
-      await interaction.editReply(`Análise de #${channel.name} (${localDate}) agendada para ${interaction.options.getString('data', true)} às ${interaction.options.getString('hora', true)} ${CONVERSATION.timeZone}. Enviarei o resultado por DM.`);
-      logger.info({ canal: where, canalAnalise: channel.name, dia: localDate, scheduledAt: new Date(scheduledAt).toISOString(), autor: who }, 'análise de conversas agendada');
+      const executionTime = interaction.options.getString('hora');
+      const executionDate = interaction.options.getString('data')
+        ?? (executionTime ? localDateInZone(interaction.createdTimestamp, CONVERSATION.timeZone) : null);
+      const executionDescription = executionDate
+        ? `agendada para ${executionDate} às ${executionTime} ${CONVERSATION.timeZone}`
+        : 'iniciada agora';
+      await interaction.editReply(`Análise de #${channel.name} (${localDate}) ${executionDescription}. Enviarei o resultado por DM.`);
+      logger.info({ tag: 'conversation-analysis', canal: where, canalAnalise: channel.name, dia: localDate, scheduledAt: new Date(scheduledAt).toISOString(), autor: who }, executionDate ? 'análise de conversas agendada' : 'análise de conversas iniciada');
+      if (conversationCron) {
+        void conversationCron.refresh().catch((err) => logger.error({ tag: 'conversation-analysis', err, guildId: interaction.guildId, channelId: channel.id, localDate }, 'falha ao atualizar o cron após iniciar ou agendar análise'));
+      }
     } catch (err) {
-      logger.warn({ err, canal: where, canalAnalise: channel.name, dia: localDate }, 'não foi possível agendar a análise de conversas');
-      await interaction.editReply(`Não consegui agendar a análise: ${err.message}`);
+      logger.warn({ tag: 'conversation-analysis', err, canal: where, canalAnalise: channel.name, dia: localDate }, 'não foi possível iniciar ou agendar a análise de conversas');
+      await interaction.editReply(`Não consegui iniciar ou agendar a análise: ${err.message}`);
     }
     return;
   }
@@ -722,9 +771,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   if (interaction.commandName === 'prompt-list') {
-    const pages = formatPromptListPages(userPromptStore.list());
-    await interaction.reply({ content: pages[0], allowedMentions: { parse: [] }, ...ephemeral });
-    for (const content of pages.slice(1)) await interaction.followUp({ content, allowedMentions: { parse: [] }, ...ephemeral });
+    await replyPromptList(interaction, userPromptStore.list(), {
+      onError: (err) => logger.warn({ err, userId: interaction.user.id }, 'não foi possível enviar os prompts no privado'),
+    });
     return;
   }
 });
@@ -845,10 +894,11 @@ async function resolveReference(message, item) {
 // vira um bloco "não foi possível analisar", e o lote segue.
 async function attachImages(item, reference, { where, who }) {
   const { message } = item;
+  item.imageTraceId ??= crypto.randomUUID();
   if (config.images.max <= 0) return;
   const { images, rejected } = collectImages({ message, reference, mentionsBot: item.mentionsBot, isTarget: item.target, limits: config.images });
   for (const r of rejected) {
-    logger.info({ canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
+    logger.info({ tag: 'image-analysis', traceId: item.imageTraceId ?? message.id, messageId: message.id, canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
   }
   if (images.length === 0) return;
   trackConversationWork(message, 1);
@@ -856,7 +906,7 @@ async function attachImages(item, reference, { where, who }) {
   item.mediaAnalysisIds = mediaImages.map((image) => image.mediaAnalysisId);
   const hint = stripBotMention(item.content, message);
   for (const image of mediaImages) {
-    logger.info({ canal: where, autor: who, dica: hint || undefined }, `imagem recebida: ${image.name} (${image.size != null ? `${(image.size / 1e6).toFixed(1)} MB, ` : ''}${image.source}) → analisando`);
+    logger.info({ tag: 'image-analysis', traceId: item.imageTraceId, messageId: message.id, mediaAnalysisId: image.mediaAnalysisId, canal: where, autor: who, dica: hint || undefined }, `imagem recebida: ${image.name} (${image.size != null ? `${(image.size / 1e6).toFixed(1)} MB, ` : ''}${image.source}) → analisando`);
   }
   // "digitando" durante toda a análise: sinaliza que o fluxo já começou e que
   // o lote fecha em seguida; a geração assume o indicador depois
@@ -875,8 +925,10 @@ async function attachImages(item, reference, { where, who }) {
       monitor,
       analyzedMessageCount: 1,
       onResult: (r, seconds) => {
-        if (r.error) logger.warn({ canal: where, autor: who, segundos: seconds.toFixed(1) }, `falha ao analisar imagem ${r.name}: ${r.error}`);
-        else logger.info({ canal: where, autor: who, segundos: seconds.toFixed(1), chars: r.description.length, resultado: r.description }, 'imagem descrita');
+        const image = mediaImages.find((candidate) => candidate.mediaAnalysisId === r.mediaAnalysisId);
+        const detail = { tag: 'image-analysis', traceId: item.imageTraceId, messageId: message.id, mediaAnalysisId: r.mediaAnalysisId, sourceMessageId: image?.sourceMessageId, canal: where, autor: who, segundos: seconds.toFixed(1) };
+        if (r.error) logger.warn(detail, `falha ao analisar imagem ${r.name}: ${r.error}`);
+        else logger.info({ ...detail, chars: r.description.length, resultado: r.description }, 'imagem descrita');
       },
     }), { priority: 'normal' });
   } finally {

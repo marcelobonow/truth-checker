@@ -18,7 +18,10 @@ export function buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort
     // teto de idas à web por resposta: cada resultado de busca entra no contexto
     if (maxTurns) args.push('--max-turns', String(maxTurns));
   }
-  if (mode === 'analysis') args.push('--tools', '', '--allowedTools', '', ...lean, '--max-turns', '1');
+  if (mode === 'analysis') {
+    const tools = `Read,${WEB_TOOLS}`;
+    args.push('--tools', tools, '--allowedTools', tools, ...lean, '--max-turns', String(maxTurns ?? 80));
+  }
   if (mode === 'full') args.push('--dangerously-skip-permissions');
   // Descrição de imagem: só Read (o cwd é a pasta da imagem, e Read fora dele
   // é negado em -p), sem sessão; ler + responder cabe em poucos turnos.

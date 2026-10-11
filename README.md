@@ -63,11 +63,34 @@ Codex em `src/settings.js`. Design original em
   [docs/model-selector.md](docs/model-selector.md)).
 - Prompt por usuário: `/prompt` abre um editor com o texto atual preenchido.
   Salve até 2000 caracteres para orientar as respostas a você nos modos web e
-  full; apague o texto e envie para remover o prompt. `/prompt-list` mostra quem
-  configurou um prompt e os primeiros 25 caracteres de cada um. Os prompts ficam
+  full; apague o texto e envie para remover o prompt. Os prompts ficam
   em `user-prompts.db` (SQLite); os comandos usam a mesma whitelist/cargos de
-  `/model`. Ao mudar ou remover o prompt, a próxima resposta inicia uma nova
-  sessão no servidor para deixar a preferência anterior fora do histórico.
+  `/model`. `/prompt-list` mostra os prompts completos em uma resposta privada
+  no canal; se a lista ultrapassar 2000 caracteres, envia no privado de quem
+  executou o comando. Ao mudar ou remover o prompt, a próxima resposta inicia
+  uma nova sessão no servidor para deixar a preferência anterior fora do histórico.
+
+## Análise diária de conversas
+
+`/analise-conversas` prepara um arquivo JSONL com o dia selecionado e o
+contexto dos dias vizinhos. A IA recebe o caminho absoluto, a quantidade de
+eventos e o tamanho da fonte. Ela consulta o arquivo conforme necessário e
+entrega uma única análise, sem chamadas por bloco nem consolidação de
+checkpoints. Claude usa `Read`; Command Code usa `read_file`; Codex usa
+comandos de leitura em sandbox somente leitura.
+As análises usam uma fila própria: uma análise em andamento não impede o bot
+de responder às menções e replies no Discord.
+
+As citações são verificadas contra a fonte antes de gerar a memória. Quando
+a resposta precisa de correção, ela é disponibilizada em um segundo arquivo
+para até dois reparos, sem pedir uma nova análise inteira. O agendador mantém
+um orçamento total de chamadas e o timeout do backend; leituras feitas pela
+IA dentro de uma execução não são blocos do agendador. Claude e Command Code
+permitem até 80 turnos por execução para leitura e consultas.
+
+Após alterar a implementação, reinicie o processo do bot para carregar o
+fluxo novo. Uma análise que terminou com erro pode ser solicitada novamente
+com `/analise-conversas` para o mesmo canal e dia.
 
 ## Requisitos
 
@@ -97,6 +120,8 @@ npm start
 
 O processo precisa ficar aberto (terminal, ou o terminal integrado do VSCode).
 O uso e os limites dependem da conta e do backend selecionado.
+Também é possível iniciar com `node src/index.js`: o bot carrega o `.env`
+da raiz do projeto antes de ler as configurações.
 
 ## Velocidade e custo
 
@@ -150,8 +175,8 @@ as métricas registram tokens e buscas web.
 
 ## Logs
 
-Console legível e arquivo `logs/bot.log` (JSON por linha, via pino). Cada
-lote registra: mensagem recebida → espera do lote → modelo usado no lote →
+Console legível e arquivos `logs/bot.AAAA-MM-DD.N.log` (JSON por linha, via
+pino-roll), com rotação diária. Cada lote registra: mensagem recebida → espera do lote → modelo usado no lote →
 atividade do backend ("pesquisando na web: …", "executando comando: …")
 → envio ao Discord, com tempo, turnos e custo estimado. `LOG_LEVEL` no `.env`.
 

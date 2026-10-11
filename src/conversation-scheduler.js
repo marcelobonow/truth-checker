@@ -8,8 +8,8 @@ import { createOrderedJsonlSnapshot } from './conversation-order.js';
 
 export function createConversationScheduler({
   archive, statePath, memoriesRoot, analyze, now = Date.now, timeZone = archive?.timeZone ?? 'America/Sao_Paulo',
-  neighborMessages = 20, maxCallsPerAnalysis = 100, maxRetries = 3, analyzerConfigHash = '1',
-  isJobIdle = () => true, onComplete = async () => {}, onError = () => {},
+  neighborMessages = 20, maxCallsPerAnalysis = 100, maxRetries = 3, staleAnalysisAfterMs = 24 * 60 * 60_000, analyzerConfigHash = '1',
+  isJobIdle = () => true, onComplete = async () => {}, onFailure = async () => {}, onError = () => {}, onProgress = async () => {},
 }) {
   if (!archive || !statePath || !memoriesRoot || typeof analyze !== 'function') throw new TypeError('archive, statePath, memoriesRoot e analyze são obrigatórios');
   let ticking = false;
@@ -74,14 +74,15 @@ export function createConversationScheduler({
     const key = jobKey(identity);
     const state = await readState();
     const existing = state.jobs[key];
-    if (existing && ['scheduled', 'pending', 'running'].includes(existing.status)) throw new Error('já existe uma análise agendada para esse canal e dia');
-    const retained = existing?.status === 'failed' ? existing : {};
+    if ((existing && ['scheduled', 'running'].includes(existing.status)) || (existing?.status === 'pending' && !existing.lastError)) {
+      throw new Error('já existe uma análise agendada para esse canal e dia');
+    }
+    if (existing && (existing.status === 'failed' || existing.status === 'pending' && existing.lastError)) await cleanupJobFiles(existing);
     const job = {
-      ...retained,
       ...identity, id: key, sourceFile: archive.filePath(identity.guildId, identity.channelId, identity.localDate),
       guildName, channelName, scheduledAt: timestamp, requestedBy: String(requestedBy),
-      status: 'scheduled', attempts: 0, callsUsed: retained.callsUsed ?? 0, nextAttemptAt: null,
-      deferredUntilIdle: false, deliveryStatus: 'pending', lastError: undefined,
+      status: 'scheduled', attempts: 0, callsUsed: 0, nextAttemptAt: null,
+      deferredUntilIdle: false, deliveryStatus: 'pending', lastError: undefined, failureNotifiedAt: undefined,
     };
     state.jobs[key] = job;
     await saveState(state);
@@ -90,7 +91,7 @@ export function createConversationScheduler({
 
   async function listScheduledJobs() {
     const state = await readState();
-    let changed = false;
+    let changed = await expireStaleJobs(state);
     for (const job of Object.values(state.jobs)) {
       if (job.status === 'running') { job.status = 'pending'; job.deferredUntilIdle = false; changed = true; }
     }
@@ -193,7 +194,7 @@ export function createConversationScheduler({
     }
     const remaining = maxCallsPerAnalysis - Number(job.callsUsed ?? 0);
     if (remaining <= 0) {
-      job.status = 'failed'; job.lastError = 'limite de chamadas desta análise atingido antes de completar todos os blocos';
+      job.status = 'failed'; job.lastError = 'limite de chamadas desta análise atingido antes de concluir a resposta final';
       state.jobs[key] = job; await saveState(state); onError(new Error(job.lastError), job); return false;
     }
     const callsBefore = Number(job.callsUsed ?? 0);
@@ -202,16 +203,25 @@ export function createConversationScheduler({
       state.jobs[key] = job;
       await saveState(state);
     };
+    const reportProgress = async (progress) => {
+      job.lastProgressAt = now();
+      state.jobs[key] = job;
+      await saveState(state);
+      return onProgress(progress, structuredClone(job));
+    };
+    await reportProgress({ phase: 'started' });
     const result = await analyze({
       events: inputEvents(job), context: await readAux(job.auxSnapshot), workDir: job.workDir,
       sourceSnapshot: job.orderedSnapshot ?? job.sourceSnapshot, auxSnapshot: job.auxSnapshot, lookupStatePath: path.join(job.workDir, 'lookup-state.json'),
       maxCalls: remaining, shouldContinue: () => true,
-      onCall, metadata: { guildId: job.guildId, channelId: job.channelId, localDate: job.localDate, timeZone, context: job.context, frozenAt: job.frozenAt, sourceHash: job.sourceHash, analyzerConfigHash },
+      onCall, onProgress: reportProgress,
+      metadata: { guildId: job.guildId, channelId: job.channelId, localDate: job.localDate, timeZone, context: job.context, frozenAt: job.frozenAt, sourceHash: job.sourceHash, analyzerConfigHash },
     });
     if (Number(job.callsUsed ?? 0) === callsBefore) job.callsUsed = callsBefore + Number(result.callsUsed ?? 0);
     await saveState(state);
     if (!result.complete) {
-      job.status = 'failed'; job.lastError = 'análise incompleta: o limite de chamadas foi atingido; agende novamente após revisar a memória parcial dos checkpoints';
+      await onProgress({ phase: 'incomplete', callsUsed: job.callsUsed, resultPhase: result.phase }, structuredClone(job));
+      job.status = 'failed'; job.lastError = `análise incompleta antes de concluir a resposta final (${result.phase ?? 'fase desconhecida'})`;
       state.jobs[key] = job; await saveState(state); onError(new Error(job.lastError), job); return false;
     }
     if (await hashFileOrEmpty(job.sourceFile) !== job.sourceHash) {
@@ -233,6 +243,7 @@ export function createConversationScheduler({
     job.status = 'completed'; job.completedAt = new Date(now()).toISOString(); job.memoryPath = memoryPath;
     job.analyzerConfigHash = analyzerConfigHash; job.deliveryStatus = 'pending'; job.coverage = coverage; state.jobs[key] = job;
     await saveState(state);
+    await onProgress({ phase: 'completed', callsUsed: job.callsUsed, coverage, analysis: result.analysis, memoryPath }, structuredClone(job));
     await cleanupJobFiles(job);
     return true;
   }
@@ -258,9 +269,13 @@ export function createConversationScheduler({
     ticking = true;
     try {
       const state = await readState();
+      await expireStaleJobs(state);
       for (const job of Object.values(state.jobs)) {
         if (job.status === 'running') { job.status = 'pending'; job.deferredUntilIdle = false; }
         else if (job.deferredUntilIdle) job.deferredUntilIdle = false;
+      }
+      for (const [key, job] of Object.entries(state.jobs)) {
+        if (job.status === 'failed' && !job.failureNotifiedAt) await notifyFailure(job, key, state);
       }
       const dueJobs = Object.entries(state.jobs)
         .filter(([, job]) => ['scheduled', 'pending'].includes(job.status) && Number(job.nextAttemptAt ?? job.scheduledAt) <= Number(at))
@@ -281,9 +296,11 @@ export function createConversationScheduler({
           continue;
         }
         job.status = 'running'; job.deferredUntilIdle = false; job.attempts = (job.attempts ?? 0) + 1; job.nextAttemptAt = null;
+        job.startedAt = now(); job.lastProgressAt = now();
         await saveState(state);
         try {
           if (await execute(job, key, state)) completed++;
+          else if (job.status === 'failed') await notifyFailure(job, key, state);
         } catch (err) {
           job.status = job.attempts >= maxRetries ? 'failed' : 'pending';
           job.nextAttemptAt = job.status === 'failed' ? null : now() + (job.attempts === 1 ? 5 : 15) * 60_000;
@@ -292,6 +309,7 @@ export function createConversationScheduler({
           state.jobs[key] = job;
           await saveState(state);
           onError(err, job);
+          if (job.status === 'failed') await notifyFailure(job, key, state);
         }
       }
       await deliverPending(state);
@@ -303,6 +321,47 @@ export function createConversationScheduler({
   }
 
   return { schedule, listScheduledJobs, tick, readState };
+
+  async function expireStaleJobs(state) {
+    if (!Number.isFinite(staleAnalysisAfterMs) || staleAnalysisAfterMs <= 0) return false;
+    let changed = false;
+    for (const [key, job] of Object.entries(state.jobs)) {
+      if (!['scheduled', 'pending', 'running', 'failed', 'completed'].includes(job.status)) continue;
+      if (job.status === 'scheduled' && Number(job.scheduledAt) > now()) continue;
+      const lastActivity = timestamp(job.completedAt ?? job.lastProgressAt ?? job.startedAt ?? job.scheduledAt);
+      if (!Number.isFinite(lastActivity) || now() - lastActivity <= staleAnalysisAfterMs) continue;
+      if (['scheduled', 'pending', 'running'].includes(job.status)) {
+        job.status = 'failed';
+        job.nextAttemptAt = null;
+        job.deferredUntilIdle = false;
+        job.lastError = `análise removida por inatividade superior a ${Math.round(staleAnalysisAfterMs / 60_000)} minutos`;
+        state.jobs[key] = job;
+        await saveState(state);
+      }
+      const notified = job.status === 'failed' ? await notifyFailure(job, key, state) : true;
+      if (notified) {
+        try { await cleanupJobFiles(job); } catch (err) { onError(err, job); }
+        delete state.jobs[key];
+      }
+      changed = true;
+    }
+    if (changed) await saveState(state);
+    return changed;
+  }
+
+  async function notifyFailure(job, key, state) {
+    if (job.failureNotifiedAt) return true;
+    try {
+      await onFailure(structuredClone(job));
+      job.failureNotifiedAt = new Date(now()).toISOString();
+      state.jobs[key] = job;
+      await saveState(state);
+      return true;
+    } catch (err) {
+      onError(err, job);
+      return false;
+    }
+  }
 
   async function evidenceSources(analysis, job) {
     const ids = new Set(collectEvidenceIds(analysis));
@@ -397,3 +456,4 @@ function validLocalDate(value) {
 }
 function digest(text) { return crypto.createHash('sha256').update(text).digest('hex').slice(0, 24); }
 function safeError(error) { return `${error?.name ?? 'Error'}: ${String(error?.message ?? 'falha').replace(/(?:token|secret|api[_ -]?key|authorization)\s*[:=]\s*\S+/gi, '[redigido]').slice(0, 180)}`; }
+function timestamp(value) { return typeof value === 'number' ? value : Date.parse(value); }

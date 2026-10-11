@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { chunkEvents, compactTimeline, parseAnalysisResponse, validateStructuredAnalysis, renderMemoryMarkdown, runAnalysisChunks } from '../src/conversation-analysis.js';
+import { chunkEvents, compactTimeline, parseAnalysisResponse, validateStructuredAnalysis, renderMemoryMarkdown, runAnalysisChunks, runAnalysisFromFile } from '../src/conversation-analysis.js';
 
 const event = (id, content) => ({ schemaVersion: 1, type: 'message', eventId: `message:${id}`, messageId: id, guildId: 'g1', channelId: 'c1', authorName: `autor-${id}`, content, cleanContent: content, localDate: '2026-10-08' });
 const valid = (id, quote) => ({ summary: 'Resumo', topics: [], interactions: [], worked: [{ observation: 'Funcionou', confidence: 'media', evidence: [{ eventId: `message:${id}`, quote }] }], failed: [], promptChanges: [], codeChanges: [], limitations: [] });
@@ -22,6 +22,19 @@ test('validateStructuredAnalysis exige evidência presente no input e citação 
   assert.throws(() => validateStructuredAnalysis(valid('2', 'trecho real'), [event('1', 'um trecho real aqui')]), /fora da entrada/);
   assert.throws(() => validateStructuredAnalysis(valid('1', 'invento'), [event('1', 'um trecho real aqui')]), /não confere/);
   assert.throws(() => parseAnalysisResponse('{"summary":"ok"}'), /campo obrigatório/);
+  assert.throws(() => parseAnalysisResponse(JSON.stringify({ ...valid('1', 'trecho real'), worked: [{ observation: 'Funcionou', confidence: 'alta', evidence: [null] }] })), /evidência precisa conter eventId e quote/);
+});
+
+test('validateStructuredAnalysis restaura a citação literal quando só mudam os espaços', () => {
+  const source = '<@1549995906584289452> Explique para o <@1071521379482087485>  o conceito de seita.';
+  const analysis = valid('1', 'Explique para o <@1071521379482087485> o conceito de seita.');
+  validateStructuredAnalysis(analysis, [event('1', source)]);
+  assert.equal(analysis.worked[0].evidence[0].quote, 'Explique para o <@1071521379482087485>  o conceito de seita.');
+});
+
+test('validação flexível de espaços não junta campos distintos da fonte', () => {
+  const source = { ...event('1', 'prefixo'), cleanContent: 'sufixo' };
+  assert.throws(() => validateStructuredAnalysis(valid('1', 'prefixo sufixo'), [source]), /não confere/);
 });
 
 test('validateStructuredAnalysis rejeita recomendações sem campos ou evidência obrigatórios', () => {
@@ -81,6 +94,46 @@ test('runAnalysisChunks salva checkpoints e retoma sem repetir chamadas', async 
     assert.equal(second.complete, true);
     assert.equal(calls, 3);
     assert.equal(second.analysis.summary, 'Resumo');
+  } finally { await fs.rm(workDir, { recursive: true, force: true }); }
+});
+
+test('runAnalysisChunks repete o reparo quando a resposta ainda traz evidência incompleta', async () => {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'analysis-invalid-evidence-'));
+  try {
+    let calls = 0;
+    const result = await runAnalysisChunks({
+      events: [{ ...event('1', 'trecho da fonte'), analysisRef: 'e0' }],
+      workDir,
+      maxChars: 4_000,
+      call: async () => {
+        calls++;
+        if (calls < 3) return JSON.stringify({ ...valid('1', 'trecho da fonte'), worked: [{ observation: 'Funcionou', confidence: 'media', evidence: [{ eventId: 'e0' }] }] });
+        return JSON.stringify({ ...valid('1', 'trecho da fonte'), worked: [{ observation: 'Funcionou', confidence: 'media', evidence: [{ eventId: 'e0', quote: 'trecho da fonte' }] }] });
+      },
+    });
+    assert.equal(result.complete, true);
+    assert.equal(calls, 3);
+    assert.equal(result.analysis.worked[0].evidence[0].quote, 'trecho da fonte');
+  } finally { await fs.rm(workDir, { recursive: true, force: true }); }
+});
+
+test('runAnalysisChunks descarta achados sem evidência válida após esgotar os reparos', async () => {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'analysis-discard-invalid-evidence-'));
+  try {
+    let calls = 0;
+    const result = await runAnalysisChunks({
+      events: [{ ...event('1', 'trecho da fonte'), analysisRef: 'e0' }],
+      workDir,
+      maxChars: 4_000,
+      call: async () => {
+        calls++;
+        return JSON.stringify({ ...valid('1', 'trecho da fonte'), worked: [{ observation: 'Sem citação válida', confidence: 'media', evidence: [{ eventId: 'e0' }] }] });
+      },
+    });
+    assert.equal(result.complete, true);
+    assert.equal(calls, 3);
+    assert.deepEqual(result.analysis.worked, []);
+    assert.match(result.analysis.limitations[0], /evidência incompleta/);
   } finally { await fs.rm(workDir, { recursive: true, force: true }); }
 });
 
@@ -199,5 +252,75 @@ test('leituras adicionais consomem somente o orçamento restante do bloco', asyn
     assert.equal(result.complete, true);
     assert.ok(requestedBytes > 0 && requestedBytes < 2_000);
     assert.ok(prompts.every((prompt) => Buffer.byteLength(prompt) <= 4_000));
+  } finally { await fs.rm(workDir, { recursive: true, force: true }); }
+});
+
+
+test('análise por arquivo consulta o dia completo em uma chamada sem blocos', async () => {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'analysis-file-'));
+  try {
+    const events = Array.from({ length: 150 }, (_, i) => ({ ...event(String(i), `texto ${i}`), analysisRef: `e${i}` }));
+    events[0].content = '😀'.repeat(2_000);
+    const phases = [];
+    let calls = 0;
+    const result = await runAnalysisFromFile({ events, workDir,
+      onProgress: async (progress) => phases.push(progress.phase),
+      call: async (prompt, options) => {
+        calls++;
+        const input = JSON.parse(prompt);
+        assert.ok(path.isAbsolute(input.conversationFile));
+        assert.equal(options.workDir, path.dirname(input.conversationFile));
+        assert.equal(options.phase, 'analysis');
+        const text = await fs.readFile(input.conversationFile, 'utf8');
+        const records = text.trim().split('\n').map((line) => JSON.parse(line));
+        assert.equal(input.lineCount, records.length);
+        assert.equal(input.byteCount, Buffer.byteLength(text));
+        assert.equal(input.messageCount, 150);
+        assert.equal(records.filter((r) => r.recordType === 'event').length, 150);
+        assert.equal(records.filter((r) => r.analysisRef === 'e0' && r.field === 'content').map((r) => r.text).join(''), events[0].content);
+        assert.ok(text.trim().split('\n').every((line) => Buffer.byteLength(line) <= 1_500));
+        return JSON.stringify({ ...valid('149', 'texto 149'), worked: [{ observation: 'Última mensagem lida', confidence: 'alta', evidence: [{ eventId: 'e149', quote: 'texto 149' }] }] });
+      },
+    });
+    assert.equal(result.complete, true);
+    assert.equal(calls, 1);
+    assert.equal(result.analysis.worked[0].evidence[0].eventId, 'message:149');
+    assert.ok(phases.includes('analysis_file_ready'));
+    assert.ok(!phases.some((phase) => phase.startsWith('chunk')));
+    assert.deepEqual(await fs.readdir(workDir), ['analysis-inputs']);
+  } finally { await fs.rm(workDir, { recursive: true, force: true }); }
+});
+
+test('reparo por arquivo recebe resposta anterior e corrige citação rejeitada', async () => {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'analysis-file-repair-'));
+  try {
+    let calls = 0;
+    const invalid = JSON.stringify(valid('1', 'citação inventada'));
+    const result = await runAnalysisFromFile({ events: [event('1', 'fonte literal')], workDir,
+      call: async (prompt, options) => {
+        if (++calls === 1) return invalid;
+        assert.equal(options.phase, 'repair');
+        assert.match(prompt, /Não refaça a análise inteira/);
+        assert.match(prompt, /citação inventada/);
+        assert.equal(await fs.readFile(path.join(options.workDir, 'previous-response.txt'), 'utf8'), invalid);
+        return JSON.stringify(valid('1', 'fonte literal'));
+      },
+    });
+    assert.equal(result.complete, true);
+    assert.equal(result.callsUsed, 2);
+  } finally { await fs.rm(workDir, { recursive: true, force: true }); }
+});
+
+test('análise por arquivo respeita orçamento sem publicar resposta inválida', async () => {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'analysis-file-budget-'));
+  try {
+    let calls = 0;
+    const result = await runAnalysisFromFile({ events: [event('1', 'fonte')], workDir, maxCalls: 1,
+      call: async () => { calls++; return JSON.stringify(valid('1', 'invento')); },
+    });
+    assert.equal(result.complete, false);
+    assert.equal(result.phase, 'repair');
+    assert.equal(result.analysis, undefined);
+    assert.equal(calls, 1);
   } finally { await fs.rm(workDir, { recursive: true, force: true }); }
 });

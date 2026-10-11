@@ -24,7 +24,7 @@ export const FULL_ACCESS_GUILD_IDS = [
 // Qual CLI gera as respostas: 'claude' (Claude Code), 'commandcode' (Command
 // Code) ou 'codex' (Codex CLI). Modelos por backend: settings.<backend>.js.
 // Executáveis: CLAUDE_BIN / COMMANDCODE_BIN / CODEX_BIN no .env.
-export const BACKEND = 'codex';
+export const BACKEND = 'commandcode';
 
 // false: só os usuários acima são atendidos (menções de outras pessoas são ignoradas).
 // true: qualquer pessoa que mencionar @bot recebe resposta, sempre em modo web.
@@ -98,17 +98,12 @@ export const CONVERSATION = {
   analysisBackend: process.env.CONVERSATION_ANALYSIS_BACKEND?.trim() || null,
   archiveDir: process.env.CONVERSATION_ARCHIVE_DIR?.trim() || 'conversas',
   memoriesDir: process.env.CONVERSATION_MEMORIES_DIR?.trim() || 'memorias-conversas',
-  timeZone: process.env.CONVERSATION_TIME_ZONE?.trim() || 'Etc/GMT+3',
+  timeZone: process.env.CONVERSATION_TIME_ZONE?.trim() || 'America/Sao_Paulo',
   neighborMessages: 20,
   maxQueueBytes: 8_000_000,
-  maxInputChars: 40_000,
-  maxCallsPerAnalysis: 100,
-  maxLookupQueries: 100,
-  maxLookupResults: 20,
-  maxLookupBytes: 32_000,
-  maxLookupFieldChars: 12_000,
-  maxReadRoundsPerBlock: 3,
+  maxCallsPerAnalysis: 5,
   maxRetries: 3,
+  staleAnalysisAfterMs: Number(process.env.CONVERSATION_STALE_ANALYSIS_MS) || 24 * 60 * 60_000,
 };
 
 // Reinício automático da sessão do Claude (o contexto não cresce sem limite):
