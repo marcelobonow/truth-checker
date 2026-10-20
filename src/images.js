@@ -167,7 +167,7 @@ export async function describeImage({ file, hint = '', context = [], backend, co
 // Baixa e descreve cada imagem, em sequência. Devolve um resultado por imagem:
 // { source, name, description } ou { source, name, error } (o modelo fica
 // sabendo que havia uma imagem que não deu para ler).
-export async function analyzeImages(images, { dir, fileBase, hint, context, backend, config, fetchImpl, monitor = null, analyzedMessageCount = 1, onResult = () => { } }) {
+export async function analyzeImages(images, { dir, fileBase, hint, context = [], backend, config, fetchImpl, monitor = null, analyzedMessageCount = 1, onResult = () => { } }) {
   const results = [];
   for (const [i, image] of images.entries()) {
     const started = Date.now();

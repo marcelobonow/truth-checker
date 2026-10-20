@@ -1,3 +1,4 @@
+import { prependRuntimeInfo } from './runtime-prompt.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -148,7 +149,8 @@ export async function run({ prompt, args, instructions, sessionId, cwd, bin, tim
   }
 }
 
-export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt, imageFile }) {
+export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, runtime, prompt, imageFile }) {
+  prompt = prependRuntimeInfo(prompt, { backend: 'codex', mode, model, effort, maxTurns, runtime });
   const adjustedPrompt = mode === 'vision'
     ? prompt.replace(/Descreva a imagem em .* com detalhe e sem repetição, seguindo as instruções do seu prompt\./, 'Descreva a imagem anexada com detalhe e sem repetição, seguindo as instruções do seu prompt.')
     : prompt;

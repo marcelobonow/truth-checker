@@ -1,12 +1,9 @@
 // Modelos do backend Claude Code (BACKEND = 'claude' em settings.js).
 
-// Modelo por modo: alias ('sonnet', 'opus', 'haiku') ou nome completo.
-// null = padrão do Claude Code. 'sonnet' no web deixa mais rápido e gasta menos cota.
+// Modelos auxiliares; o padrão web/full fica no models.db (/model-default).
 export const MODEL = {
-  web: "sonnet",
-  full: "sonnet",
   vision: null, // descrição de imagens (IMAGES em settings.js); null = mesmo do web
-  analysis: null, // análise diária; null = mesmo do web
+  analysis: "sonnet", // modelo da análise diária
 };
 
 // Modelos que os usuários podem escolher com /model (docs/model-selector.md).

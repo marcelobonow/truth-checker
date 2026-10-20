@@ -1,10 +1,9 @@
 // Modelos do backend Codex CLI. A seleção de backend fica em src/settings.js.
 
 export const MODEL = {
-  web: 'gpt-6-luna',
-  full: 'gpt-6-luna',
+  // O padrão web/full fica no models.db (/model-default).
   vision: 'gpt-6-luna',
-  analysis: null, // null = mesmo do web
+  analysis: 'gpt-6-luna',
 };
 
 // Luna é o único modelo disponível no seletor /model para este backend.

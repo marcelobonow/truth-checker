@@ -46,6 +46,7 @@ test('preserva jobs distintos quando dois canais são agendados simultaneamente'
   try {
     const scheduler = createConversationScheduler({
       archive: f.archive, statePath: path.join(f.root, 'estado.json'), memoriesRoot: path.join(f.root, 'memorias'),
+      now: () => Date.parse('2026-10-10T17:00:00Z'),
       analyze: async () => ({ complete: true, callsUsed: 1, analysis }),
     });
     const scheduledAt = Date.parse('2026-10-10T17:16:00Z');
@@ -136,9 +137,9 @@ test('scheduler analisa somente dias agendados, congela até 20 mensagens vizinh
         for await (const item of events) seen.push(item);
         if (metadata.localDate === '2026-10-08') {
           targetSeen = seen;
-          assert.equal(seen.find((item) => item.messageId === 'prev').analysisRef, 'p0');
-          assert.equal(seen.find((item) => item.messageId === 'target').analysisRef, 'e0');
-          assert.equal(seen.find((item) => item.messageId === 'next').analysisRef, 'n0');
+          assert.equal(seen.find((item) => item.content === 'contexto anterior').analysisRef, 'p0');
+          assert.equal(seen.find((item) => item.content === 'conversa do dia alvo').analysisRef, 'e0');
+          assert.equal(seen.find((item) => item.content === 'contexto posterior').analysisRef, 'n0');
           assert.equal(context.previous.length, 1);
           assert.equal(context.next.length, 1);
         }
@@ -149,9 +150,9 @@ test('scheduler analisa somente dias agendados, congela até 20 mensagens vizinh
     await scheduleDay(scheduler, '2026-10-08');
     await scheduleDay(scheduler, '2026-10-09');
     assert.equal((await scheduler.tick()).completed, 2);
-    assert.equal(targetSeen.filter((item) => item.type === 'message' && !item.contextRole).map((item) => item.messageId).join(','), 'target');
-    assert.equal(targetSeen.find((item) => item.messageId === 'prev').contextRole, 'previous_day');
-    assert.equal(targetSeen.find((item) => item.messageId === 'next').contextRole, 'next_day');
+    assert.equal(targetSeen.filter((item) => item.type === 'message' && !item.contextRole).map((item) => item.content).join(','), 'conversa do dia alvo');
+    assert.equal(targetSeen.find((item) => item.content === 'contexto anterior').contextRole, 'previous_day');
+    assert.equal(targetSeen.find((item) => item.content === 'contexto posterior').contextRole, 'next_day');
     assert.ok(await fs.readFile(path.join(f.root, 'memorias', 'g1', 'c1', 'memoria-2026-10-08.md'), 'utf8').then((text) => text.includes('Resumo do canal.')));
     const completed = await scheduler.readState();
     await assert.rejects(fs.access(completed.jobs['g1:c1:2026-10-08'].workDir));
@@ -237,26 +238,27 @@ test('um novo agendamento explícito reanalisa o dia com a configuração atual'
   } finally { await f.close(); }
 });
 
-test('marca gerações e análises de mídia abertas como interrompidas após reinício', async () => {
+test('retoma job marcado como running após reinício e analisa somente mensagens arquivadas', async () => {
   const f = await setup();
   try {
     await f.archive.recordMessage(msg('target', '2026-10-09T02:59:00Z', 'conversa'));
-    await f.archive.recordEvent({ type: 'generation_start', eventId: 'generation:g1:start', generationId: 'g1', guildId: 'g1', channelId: 'c1', createdAt: '2026-10-09T02:58:00Z', sourceMessageIds: ['target'] });
-    await f.archive.recordEvent({ type: 'media_analysis_start', eventId: 'media:m1:start', mediaAnalysisId: 'm1', guildId: 'g1', channelId: 'c1', createdAt: '2026-10-09T02:57:00Z', sourceMessageId: 'target' });
     await f.archive.flush();
-    const scheduler = createConversationScheduler({
-      archive: f.archive, statePath: path.join(f.root, 'estado.json'), memoriesRoot: path.join(f.root, 'memorias'),
-      now: () => Date.parse('2026-10-09T06:00:00Z'),
-      analyze: async ({ events }) => {
-        const seen = [];
-        for await (const item of events) seen.push(item);
-        assert.equal(seen.find((item) => item.type === 'generation_end').outcome, 'interrupted');
-        assert.equal(seen.find((item) => item.type === 'media_analysis_end').status, 'interrupted');
-        return { complete: true, callsUsed: 1, analysis };
-      },
-    });
-    await scheduleDay(scheduler);
-    assert.equal((await scheduler.tick()).completed, 1);
+    const statePath = path.join(f.root, 'estado.json');
+    const options = { archive: f.archive, statePath, memoriesRoot: path.join(f.root, 'memorias'), now: () => Date.parse('2026-10-09T06:00:00Z') };
+    const first = createConversationScheduler({ ...options, analyze: async () => { throw new Error('não deve rodar'); } });
+    await scheduleDay(first);
+    const state = await first.readState();
+    state.jobs['g1:c1:2026-10-08'].status = 'running';
+    await fs.writeFile(statePath, JSON.stringify(state));
+    const restarted = createConversationScheduler({ ...options, analyze: async ({ events }) => {
+      const seen = [];
+      for await (const event of events) seen.push(event);
+      assert.deepEqual(seen.map((event) => event.type), ['message']);
+      assert.equal(seen[0].content, 'conversa');
+      return { complete: true, callsUsed: 1, analysis };
+    } });
+    assert.equal((await restarted.tick()).completed, 1);
+    assert.equal((await restarted.readState()).jobs['g1:c1:2026-10-08'].status, 'completed');
   } finally { await f.close(); }
 });
 
@@ -281,22 +283,24 @@ test('adia a análise enquanto o canal ainda tem geração ou mídia em processa
   } finally { await f.close(); }
 });
 
-test('memória identifica captura parcial após desconexão conhecida', async () => {
+test('não analisa nem publica memória quando o arquivo informa perda de registros', async () => {
   const f = await setup();
   try {
-    await f.archive.recordMessage(msg('target', '2026-10-09T02:59:00Z', 'conversa'));
-    await f.archive.recordStatus({ guildId: 'g1', channelId: 'c1', localDate: '2026-10-08', status: 'disconnected', observedAt: '2026-10-08T22:00:00.000Z' });
-    await f.archive.flush();
+    const archive = createConversationArchive({ root: f.archive.root, maxQueueBytes: 1 });
+    assert.equal(await archive.recordMessage(msg('lost', '2026-10-09T02:59:00Z', 'conversa')), false);
+    let calls = 0;
     const scheduler = createConversationScheduler({
-      archive: f.archive, statePath: path.join(f.root, 'estado.json'), memoriesRoot: path.join(f.root, 'memorias'),
+      archive, statePath: path.join(f.root, 'estado.json'), memoriesRoot: path.join(f.root, 'memorias'),
       now: () => Date.parse('2026-10-09T06:00:00Z'),
-      analyze: async () => ({ complete: true, callsUsed: 1, analysis }),
+      analyze: async () => { calls++; return { complete: true, callsUsed: 1, analysis }; },
     });
     await scheduleDay(scheduler);
-    assert.equal((await scheduler.tick()).completed, 1);
-    const memory = await fs.readFile(path.join(f.root, 'memorias', 'g1', 'c1', 'memoria-2026-10-08.md'), 'utf8');
-    assert.match(memory, /captura parcial/);
-    assert.match(memory, /captura disconnected/);
+    assert.equal((await scheduler.tick()).completed, 0);
+    assert.equal(calls, 0);
+    const job = (await scheduler.readState()).jobs['g1:c1:2026-10-08'];
+    assert.equal(job.status, 'pending');
+    assert.match(job.lastError, /fila.*não drenou/);
+    await assert.rejects(fs.access(path.join(f.root, 'memorias', 'g1', 'c1', 'memoria-2026-10-08.md')));
   } finally { await f.close(); }
 });
 

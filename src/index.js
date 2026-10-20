@@ -12,7 +12,7 @@ import { resolveMode, isTarget, skipReason, sessionKey, buildUserMessage, isNoRe
 import { selectBackend } from './backend.js';
 import { judge, compileDictionary } from './heuristic.js';
 import { parseDictionary } from './dicionario.js';
-import { fetchUsage, formatUsage } from './usage.js';
+import { fetchUsage, formatUsage, fetchCommandCodeUsage, formatCommandCodeUsage } from './usage.js';
 import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { createModelStore, DEFAULT_MODEL_CHOICE, formatModelList, normalizeChoices, choiceValue, choiceName } from './models.js';
@@ -103,7 +103,7 @@ const config = {
   timeoutMs: Number(env.CLAUDE_TIMEOUT_MS) || 600_000,
   batchDelayMs: Number(env.BATCH_DELAY_MS) || 7_000,
   extraPrompt: { web: prompts.web.text, full: prompts.full.text },
-  model: { web: MODEL.web || undefined, full: MODEL.full || undefined, vision: MODEL.vision || undefined },
+  model: { vision: MODEL.vision || undefined },
   effort: { web: EFFORT.web || undefined, full: EFFORT.full || undefined, vision: EFFORT.vision || undefined },
   maxTurns: { web: WEB_MAX_TURNS || undefined },
   judge: MENTIONS_AND_REPLIES_ONLY ? null : (JUDGE || null),
@@ -150,6 +150,24 @@ if (modelChoices.length > 0) {
   } catch (err) {
     fatal(new Error(`não consegui abrir models.db: ${err.message}`));
   }
+}
+function applyDefaultModel(entry) {
+  for (const mode of ['web', 'full']) {
+    config.model[mode] = entry?.model;
+    config.effort[mode] = entry?.effort ?? null;
+  }
+}
+if (modelStore) {
+  const savedDefault = modelStore.getDefault(backend.name);
+  let entry = entryByValue.get(savedDefault);
+  if (!entry) {
+    // Migração inicial preserva o antigo padrão; depois, só o banco decide.
+    const initialChoice = backend.name === 'commandcode' ? 'deepseek/deepseek-v4.1-flash:low' : 'sonnet';
+    entry = entryByValue.get(initialChoice) ?? modelChoices[0];
+    if (!modelStore.setDefault(backend.name, choiceValue(entry))) fatal(new Error('não consegui salvar o modelo padrão em models.db'));
+    if (savedDefault) logger.warn({ escolha: savedDefault, modelo: choiceName(entry) }, 'padrão fora da lista atual: substituído');
+  }
+  applyDefaultModel(entry);
 }
 let userPromptStore;
 try {
@@ -386,12 +404,24 @@ const COMMANDS = [
         description: 'Modelo da lista, ou "padrão" para voltar ao modelo configurado',
         required: true,
         choices: [
-          { name: `${DEFAULT_MODEL_CHOICE} (volta ao modelo das settings)`, value: DEFAULT_MODEL_CHOICE },
+          { name: `${DEFAULT_MODEL_CHOICE} (usa o modelo padrão global)`, value: DEFAULT_MODEL_CHOICE },
           ...modelChoices.map((entry) => ({ name: choiceName(entry), value: choiceValue(entry) })),
         ],
       }],
     },
     { name: 'model-list', description: 'Lista quem escolheu um modelo diferente do padrão', contexts: [InteractionContextType.Guild] },
+    {
+      name: 'model-default',
+      description: 'Admin: altera o modelo padrão global em todos os servidores',
+      contexts: [InteractionContextType.Guild],
+      options: [{
+        type: ApplicationCommandOptionType.String,
+        name: 'modelo',
+        description: 'Modelo e esforço que passam a ser o padrão global',
+        required: true,
+        choices: modelChoices.map((entry) => ({ name: choiceName(entry), value: choiceValue(entry) })),
+      }],
+    },
   ] : []),
   {
     name: 'prompt',
@@ -505,6 +535,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
   if (!interaction.isChatInputCommand()) return;
   const ephemeral = { flags: MessageFlags.Ephemeral };
+  if (interaction.commandName === 'model-default') {
+    if (!ADMIN_USER_ID || interaction.user.id !== ADMIN_USER_ID) {
+      await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
+      return;
+    }
+    const entry = entryByValue.get(interaction.options.getString('modelo', true));
+    if (!entry || !modelStore) {
+      await interaction.reply({ content: 'Esse modelo não está mais disponível na lista atual. Aguarde a atualização do comando e tente novamente.', ...ephemeral });
+      return;
+    }
+    if (!modelStore.setDefault(backend.name, choiceValue(entry))) {
+      await interaction.reply({ content: '⚠️ Não consegui salvar o modelo padrão.', ...ephemeral });
+      return;
+    }
+    applyDefaultModel(entry);
+    logger.info({ adminId: interaction.user.id, backend: backend.name, modelo: choiceName(entry) }, 'modelo padrão global alterado');
+    await interaction.reply({ content: `Modelo padrão global definido: \`${choiceName(entry)}\`. Vale para as próximas respostas em todos os servidores; escolhas individuais continuam valendo.`, ...ephemeral });
+    return;
+  }
   if (interaction.commandName === 'servidores' || interaction.commandName === 'sair') {
     if (!ADMIN_USER_ID || interaction.user.id !== ADMIN_USER_ID) {
       await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
@@ -648,6 +697,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
     let usage;
     if (!backend.supportsUsage) {
       usage = 'Uso do plano: indisponível para este backend.';
+    } else if (backend.name === 'commandcode') {
+      try {
+        usage = formatCommandCodeUsage(await fetchCommandCodeUsage());
+      } catch (err) {
+        logger.warn(`não consegui consultar o uso do Command Code (${err.message})`);
+        usage = 'Uso do Command Code: indisponível.';
+      }
     } else {
       try {
         usage = `Uso do plano (5h/semana): ${formatUsage(await fetchUsage())}.`;
@@ -1056,12 +1112,13 @@ async function processBatch(items, run) {
     logger.info(detail, 'juiz local: responder');
   }
 
-  // Modelo do autor: a escolha salva (/model) sobrepõe MODEL/EFFORT do settings.
+  // Modelo do autor: a escolha salva (/model) sobrepõe o padrão global do banco.
   // Escolha fora da lista atual (ex.: troca de backend) fica salva, mas esta
   // execução usa o modelo e esforço padrão do backend ativo.
   const savedChoice = modelStore?.get(last.author.id);
-  const entry = entryByValue.get(savedChoice);
-  if (savedChoice && !entry) {
+  const userEntry = entryByValue.get(savedChoice);
+  const entry = userEntry ?? entryByValue.get(modelStore?.getDefault(backend.name));
+  if (savedChoice && !userEntry) {
     logger.warn({ canal: where, autor: displayName(last), escolha: savedChoice }, 'escolha de modelo fora da lista atual: usando o padrão');
   }
   logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${entry ? choiceName(entry) : (config.model?.[mode] ?? 'padrão do CLI')}`);
@@ -1089,8 +1146,16 @@ async function processBatch(items, run) {
   // Daqui em diante mensagem nova do autor não cancela mais (ver inflight.js).
   inflight.lock(run);
   try {
+    if (backend.name === 'commandcode') {
+      try {
+        config.commandCodeUsage = await fetchCommandCodeUsage();
+      } catch (err) {
+        config.commandCodeUsage = null;
+        logger.warn(`não consegui consultar o uso do Command Code para o contexto do modelo (${err.message})`);
+      }
+    }
     const sessionBefore = store.get(key);
-    const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length, model: entry?.model, effort: entry?.effort });
+    const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length, model: entry?.model, effort: entry ? entry.effort ?? null : undefined });
     backendSucceeded = !res.isError;
     if (!metricsEvents.hasTokenEvents(res.attemptNumber)) {
       for (const [index, usage] of (res.tokenUsage ?? []).entries()) {

@@ -58,9 +58,17 @@ Codex em `src/settings.js`. Design original em
   respostas para você, entre os de `MODEL_CHOICES`
   (`src/settings.<backend>.js`; lista vazia desliga os comandos). A escolha fica
   salva em `models.db` (SQLite, sobrevive a reinícios) e vale para os dois
-  modos; `modelo:padrão` volta ao modelo das settings. `/model-list` lista quem
+  modos; `modelo:padrão` volta ao modelo padrão global. `/model-list` lista quem
   saiu do padrão. Só a whitelist/cargos podem usar (design em
   [docs/model-selector.md](docs/model-selector.md)).
+- Padrão global: `/model-default modelo:<nome>` altera o modelo e esforço usados
+  por quem está no padrão, nos modos web e full, em todos os servidores. Só a
+  conta definida em `ADMIN_USER_ID` pode usar, mesmo fora da whitelist. A lista
+  é a mesma do `/model`. A escolha fica em `models.db`, separada por backend,
+  e é carregada em memória ao iniciar; sobrevive a reinícios e ao
+  `RESET_ON_START`. A alteração vale para as próximas gerações e preserva as
+  preferências individuais. Se o padrão sair da lista, o bot salva uma opção
+  disponível ao iniciar e registra um aviso no log.
 - Prompt por usuário: `/prompt` abre um editor com o texto atual preenchido.
   Salve até 2000 caracteres para orientar as respostas a você nos modos web e
   full; apague o texto e envie para remover o prompt. Os prompts ficam
@@ -125,10 +133,9 @@ da raiz do projeto antes de ler as configurações.
 
 ## Velocidade e custo
 
-- Em [src/settings.claude.js](src/settings.claude.js): `MODEL.web = 'sonnet'` e
-  `EFFORT.web = 'low'` (padrão) deixam o modo web mais rápido e barato;
-  `MODEL.full`/`EFFORT.full` fazem o mesmo para o modo full (`null` = padrão
-  do CLI).
+- Use `/model-default` para escolher o modelo e esforço padrão de respostas;
+  as opções disponíveis ficam em `MODEL_CHOICES` de `src/settings.<backend>.js`.
+  Os modelos auxiliares de visão e análise continuam configurados nas settings.
 - O modo web roda sem skills e sem servidores MCP (`--disable-slash-commands`,
   `--strict-mcp-config`): system prompt menor a cada chamada.
 - Sessões longas custam mais a cada mensagem (todo o histórico volta ao
@@ -152,15 +159,20 @@ mod [commandcode/mod.ts](commandcode/mod.ts) (`--mod`), que anexa o system
 prompt e restringe as ferramentas: modo web roda na pasta vazia
 [commandcode/web/](commandcode/web/) só com `web_search`/`web_fetch`; modo
 full usa `--yolo` no `WORK_DIR`. Sessões (`--resume`) e reinício
-automático funcionam igual. O `/status` não mostra uso do plano (é da API da
-Anthropic) e o log fica sem custo estimado.
+automático funcionam igual. `/status` mostra uso atual das janelas de 5 horas,
+semana e mês; os mesmos valores seguem no contexto de cada resposta. A consulta
+usa a sessão autenticada do Command Code em `~/.commandcode/auth.json` e as
+rotas internas que o CLI usa para exibir `/usage`; elas não são uma API pública
+documentada e podem mudar. Se a consulta falhar, o bot continua respondendo e
+marca o uso como indisponível. O log fica sem custo estimado.
 
 ## Usar o Codex
 
 1. Instale o Codex CLI e autentique com `codex login`; o comando `codex` precisa
    estar no PATH (ou configure `CODEX_BIN` no `.env`).
 2. Selecione `BACKEND = 'codex'` em [src/settings.js](src/settings.js). O
-   modelo padrão e a lista `/model` ficam em [src/settings.codex.js](src/settings.codex.js);
+   a lista `/model` fica em [src/settings.codex.js](src/settings.codex.js)
+   e o padrão global é alterado por `/model-default`;
    GPT-6 Luna é a única opção.
 3. O bot lê `CODEX_BIN` do `.env` (padrão `codex`) e usa
    [prompt.web.codex.md](prompt.web.codex.md), baseado no prompt do Command Code.

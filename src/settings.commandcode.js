@@ -3,10 +3,9 @@
 // moonshotai/kimi-k3, zai-org/glm-5.3). null = padrão do CLI.
 
 export const MODEL = {
-  web: "deepseek/deepseek-v4.1-flash",
-  full: "deepseek/deepseek-v4.1-flash",
+  // O padrão de respostas web/full fica no models.db (/model-default).
   vision: null, // descrição de imagens (IMAGES em settings.js); null = mesmo do web
-  analysis: null, // análise diária; null = mesmo do web
+  analysis: "deepseek/deepseek-v4.1-flash", // modelo da análise diária
 };
 
 // Modelos que os usuários podem escolher com /model (docs/model-selector.md).
@@ -21,22 +20,25 @@ export const MODEL_CHOICES = [
   { model: "gpt-6-luna", effort: "low", nome: "GPT-6 Luna (low)" },
   { model: "gpt-6-luna", effort: "high", nome: "GPT-6 Luna (high)" },
   { model: "xiaomi/mimo-v2.6-flash", effort: null, nome: "MiMo V2.6 Flash" },
+  { model: "deepseek/deepseek-v4.1-flash", effort: "low", nome: "DeepSeek V4.1 Flash (low)" },
   { model: "deepseek/deepseek-v4.1-flash", effort: "high", nome: "DeepSeek V4.1 Flash (high)" },
   { model: "deepseek/deepseek-v4-flash-fast", effort: null, nome: "DeepSeek V4 Flash Fast" },
   { model: "z-ai/glm-5.3-flash", nome: "GLM-5.3 Flash" },
-  { model: "inclusionai/ling-3.0-flash-sante:free", effort: null, nome: "Ling 3.0 Flash Sante" },
-  { model: "poolside/laguna-s-2.1-free", nome: "Laguna S 2.1" },
+  { model: "poolside/laguna-s-2.1-free", effort: null, nome: "Laguna S 2.1" },
+  { model: "minimax/minimax-m3.1-flash:free", effort: "high", nome: "MiniMax M3.1 Flash (free, high)" },
+  { model: "reflection/beam:free", nome: "Beam 1.0" },
 ];
 
 // Esforço por modo: depende do modelo (deepseek-v4.1-flash aceita low | high | max;
 // o CLI recusa outros valores). null = padrão do CLI.
 export const EFFORT = {
-  web: "high",
-  full: "high",
+  web: "low",
+  full: "low",
   vision: null, // null = mesmo do web
   analysis: null, // null = mesmo do web
 };
 
-// Máximo de turnos por resposta no modo web. Cada busca gasta ~2 turnos
-// (o modelo carrega a ferramenta via search_tools e só depois chama web_search).
-export const WEB_MAX_TURNS = 8;
+// Máximo de turnos por resposta no modo web. Não é uma cota direta de buscas:
+// cada busca costuma gastar ~2 turnos (search_tools + web_search), e web_fetch
+// e outras chamadas também consomem parte do mesmo teto.
+export const WEB_MAX_TURNS = 15;

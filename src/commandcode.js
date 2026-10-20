@@ -1,3 +1,4 @@
+import { prependRuntimeInfo } from './runtime-prompt.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runCli } from './runner.js';
@@ -10,7 +11,7 @@ import { systemPrompt } from './prompts.js';
 // `*` = todas). Ver docs/superpowers/specs/2026-09-17-backend-commandcode-design.md.
 
 export const name = 'commandcode';
-export const supportsUsage = false; // /status não tem uso do plano para mostrar
+export const supportsUsage = true; // uso do plano consultado pela API autenticada do CLI
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const MOD = path.join(ROOT, 'commandcode', 'mod.ts');
@@ -24,7 +25,11 @@ export function webDir(root) {
   return path.join(root, 'commandcode', 'web');
 }
 
-export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
+export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, runtime, prompt }) {
+  // Laguna S 2.1 não suporta esforço ajustável; o CLI termina com erro se
+  // receber --effort, inclusive quando o valor vem do esforço padrão do modo.
+  if (model === 'poolside/laguna-s-2.1-free') effort = null;
+  prompt = prependRuntimeInfo(prompt, { backend: 'commandcode', mode, model, effort, maxTurns, runtime });
   const instructions = systemPrompt({ mode, workDir, extraPrompt });
   const args = ['-p', '--output-format', 'json', '--skip-onboarding', '--trust', '--no-auto-update',
     '--mod', MOD, '--mod-option', `systemPrompt=${instructions}`];
@@ -43,7 +48,8 @@ export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, eff
     args.push('--mod-option', 'tools=*', '--yolo');
   }
   if (model) args.push('-m', model);
-  if (effort) args.push('--effort', effort);
+  // null (ou undefined) significa que o modelo não deve receber esforço ajustável.
+  if (effort != null) args.push('--effort', effort);
   if (sessionId && !['vision', 'analysis'].includes(mode)) args.push('--resume', sessionId);
   return { args, prompt, systemPrompt: instructions };
 }

@@ -111,9 +111,9 @@ test('system prompt explica o cabeçalho, a regra de julgamento e o sentinela NO
   }
 });
 
-test('extraPrompt é anexado ao final do system prompt', () => {
+test('extraPrompt precede as regras de preferência personalizada no system prompt', () => {
   const prompt = flagValue(buildArgs({ mode: 'web', extraPrompt: 'Premissa: o Node 24 é LTS.' }), '--append-system-prompt');
-  assert.ok(prompt.endsWith('Premissa: o Node 24 é LTS.'));
+  assert.ok(prompt.includes('\n\nPremissa: o Node 24 é LTS.\n\nSe houver'));
   assert.ok(!flagValue(buildArgs({ mode: 'web' }), '--append-system-prompt').includes('undefined'));
 });
 
@@ -244,7 +244,7 @@ import * as claude from '../src/claude.js';
 test('backend claude: buildRequest embrulha buildArgs e manda o prompt no stdin', () => {
   const reply = claude.buildRequest({ mode: 'web', prompt: 'oi', sessionId: 's1', maxTurns: 4 });
   assert.deepEqual(reply.args, buildArgs({ mode: 'web', sessionId: 's1', maxTurns: 4 }));
-  assert.equal(reply.prompt, 'oi');
+  assert.ok(reply.prompt.endsWith('\n\noi'));
 });
 
 test('backend claude: isSessionMissing reconhece a mensagem do CLI; webDir é a raiz; resolveBin usa CLAUDE_BIN', () => {

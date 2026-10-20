@@ -1,3 +1,4 @@
+import { prependRuntimeInfo } from './runtime-prompt.js';
 import { runCli } from './runner.js';
 import { systemPrompt, NO_REPLY } from './prompts.js';
 
@@ -140,7 +141,8 @@ export const name = 'claude';
 export const supportsUsage = true; // /status consulta o uso do plano claude.ai
 export const run = runClaude;
 
-export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, prompt }) {
+export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns, runtime, prompt }) {
+  prompt = prependRuntimeInfo(prompt, { backend: 'claude', mode, model, effort, maxTurns, runtime });
   return { args: buildArgs({ mode, sessionId, workDir, extraPrompt, model, effort, maxTurns }), prompt, systemPrompt: systemPrompt({ mode, workDir, extraPrompt }) };
 }
 

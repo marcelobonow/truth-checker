@@ -60,7 +60,8 @@ Pode vir antes do pedido um "Contexto recente do canal" com mensagens de várias
 };
 
 // System prompt completo: prompt do modo + instruções extras do servidor
-// (prompt.<modo>.md) no final. O modo vision não é conversa: vai sem extras.
+// (prompt.<modo>.md), seguidas pelas regras de preferência personalizada.
+// Vision e analysis não são conversa: vão sem extras.
 export function systemPrompt({ mode, workDir, extraPrompt }) {
   const promptFor = MODE_PROMPTS[mode];
   if (!promptFor) throw new Error(`modo desconhecido: ${mode}`);

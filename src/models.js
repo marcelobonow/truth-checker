@@ -2,11 +2,11 @@ import { DatabaseSync } from 'node:sqlite';
 
 // Escolha de modelo por usuário (/model e /model-list; design em
 // docs/model-selector.md). Quem tem linha em user_models saiu do modelo padrão
-// (MODEL.<modo> de settings.<backend>.js); sem linha = usa o padrão. Guardado
+// global salvo em default_models; sem linha = usa o padrão. Guardado
 // em SQLite local (models.db), que NÃO entra no RESET_ON_START: escolha de
 // modelo é preferência, não contexto de conversa.
 
-// Valor do /model que apaga a escolha e volta ao modelo das settings.
+// Valor do /model que apaga a escolha e volta ao modelo padrão global.
 export const DEFAULT_MODEL_CHOICE = 'padrão';
 
 // Entradas de MODEL_CHOICES (settings.<backend>.js): `{ model, effort?, nome? }`
@@ -21,8 +21,8 @@ export function normalizeChoices(list = []) {
 }
 
 // Valor único por entrada: o que o Discord devolve e o banco guarda
-// ("model" ou "model:effort"). Ids com ":" (ex.: ling-3.0-flash-sante:free)
-// sem esforço ficam intactos.
+// ("model" ou "model:effort"). Sufixos do ID (ex.: :free) sem esforço
+// ficam intactos.
 export function choiceValue({ model, effort }) {
   return effort ? `${model}:${effort}` : model;
 }
@@ -40,6 +40,16 @@ export function createModelStore(filePath, { onError = console.error } = {}) {
     model TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS default_models (
+    backend TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  // Estado carregado uma vez; só muda na memória após a gravação ter sucesso.
+  const defaults = new Map(db.prepare('SELECT backend, model FROM default_models').all().map((row) => [row.backend, row.model]));
+  const upsertDefault = db.prepare(
+    'INSERT INTO default_models (backend, model, updated_at) VALUES (?, ?, ?) ON CONFLICT(backend) DO UPDATE SET model = excluded.model, updated_at = excluded.updated_at',
+  );
   const upsert = db.prepare(
     'INSERT INTO user_models (user_id, model, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET model = excluded.model, updated_at = excluded.updated_at',
   );
@@ -59,6 +69,12 @@ export function createModelStore(filePath, { onError = console.error } = {}) {
   };
 
   return {
+    getDefault: (backend) => defaults.get(backend),
+    setDefault: (backend, model, now = Date.now()) => guard(() => {
+      upsertDefault.run(backend, model, now);
+      defaults.set(backend, model);
+      return true;
+    }, false),
     get: (userId) => guard(() => selectOne.get(userId)?.model, undefined),
     set: (userId, model, now = Date.now()) => guard(() => {
       upsert.run(userId, model, now);

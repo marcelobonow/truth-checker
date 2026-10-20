@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { systemPrompt, NO_REPLY } from '../src/prompts.js';
 
-test('systemPrompt: prompt do modo + extraPrompt no final', () => {
+test('systemPrompt: prompt do modo + extraPrompt antes das regras de preferência personalizada', () => {
   const web = systemPrompt({ mode: 'web', extraPrompt: '  Premissa: X.  ' });
   assert.match(web, /Discord/);
   assert.match(web, /NO_REPLY/);
-  assert.ok(web.endsWith('Premissa: X.'));
+  assert.ok(web.includes('\n\nPremissa: X.\n\nSe houver'));
   const full = systemPrompt({ mode: 'full', workDir: 'C:/app' });
   assert.match(full, /C:\/app/);
   assert.ok(!full.includes('undefined'));

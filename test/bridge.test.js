@@ -154,9 +154,9 @@ test('askClaude: full usa workDir e bypass; web usa webDir e --tools; prompt ext
   assert.ok(full.args.includes('--dangerously-skip-permissions'));
   assert.equal(web.cwd, 'C:\bot');
   assert.ok(web.args.includes('--tools'));
-  assert.ok(web.args[web.args.indexOf('--append-system-prompt') + 1].endsWith('Premissa: X.'));
-  assert.ok(full.args[full.args.indexOf('--append-system-prompt') + 1].endsWith('Programação.'));
-  assert.equal(web.prompt, 'oi');
+  assert.ok(web.args[web.args.indexOf('--append-system-prompt') + 1].includes('\n\nPremissa: X.\n\nSe houver'));
+  assert.ok(full.args[full.args.indexOf('--append-system-prompt') + 1].includes('\n\nProgramação.\n\nSe houver'));
+  assert.ok(web.prompt.endsWith('\n\noi'));
   assert.equal(web.bin, 'claude');
   assert.equal(web.timeoutMs, 1000);
 });
@@ -317,9 +317,12 @@ test('selectContext: autor com menos mensagens que o limite entra com o que tive
 test('askClaude: repassa onEvent ao runner', async () => {
   const store = memoryStore();
   const runner = stubRunner(() => ok('s1'));
-  const onEvent = () => {};
+  const received = [];
+  const onEvent = (event, metadata) => received.push({ event, metadata });
   await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config, runner, onEvent });
-  assert.equal(runner.calls[0].onEvent, onEvent);
+  const event = { type: 'progress' };
+  runner.calls[0].onEvent(event);
+  assert.deepEqual(received, [{ event, metadata: { attempt: 1 } }]);
 });
 
 function countingStore(initial = {}) {
@@ -489,8 +492,8 @@ test('askClaude com backend commandcode: usa buildRequest (mod com system prompt
   await askClaude({ key: 'g', mode: 'web', prompt: 'oi', store, config, backend: commandcode, runner });
   const call = runner.calls[0];
   assert.ok(call.args.includes('--mod'));
-  assert.ok(call.args.some((a) => a.startsWith('systemPrompt=') && a.endsWith('Premissa: X.')));
-  assert.equal(call.prompt, 'oi');
+  assert.ok(call.args.some((a) => a.startsWith('systemPrompt=') && a.includes('\n\nPremissa: X.\n\nSe houver')));
+  assert.ok(call.prompt.endsWith('\n\noi'));
   assert.equal(call.cwd, 'C:\bot');
   assert.equal(store.get('g'), 's1');
 });

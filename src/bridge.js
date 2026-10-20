@@ -219,6 +219,13 @@ export async function askClaude({ key, mode, prompt, store, config, backend = cl
         model: model ?? config.model?.[mode],
         effort: effort === undefined ? config.effort?.[mode] : effort,
         maxTurns: config.maxTurns?.[mode],
+        runtime: {
+          contextTokens: sessionId ? store.info?.(key)?.contextTokens : undefined,
+          messages: sessionId ? (store.info?.(key)?.messages ?? 0) : 0,
+          messageCount,
+          sessionLimits: config.session,
+          commandCodeUsage: config.commandCodeUsage ?? null,
+        },
         prompt,
       }),
       cwd,

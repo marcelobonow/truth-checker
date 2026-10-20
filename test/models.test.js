@@ -38,6 +38,33 @@ test('get de usuário sem escolha retorna undefined', () => {
   assert.equal(store.get('111'), undefined);
 });
 
+test('padrão global persiste por backend sem alterar escolhas individuais', () => {
+  const file = tmpFile();
+  const store = createModelStore(file);
+  assert.equal(store.getDefault('commandcode'), undefined);
+  store.set('111', 'gpt-6-luna:high');
+  assert.equal(store.setDefault('commandcode', 'deepseek/deepseek-v4.1-flash:low'), true);
+  assert.equal(store.setDefault('claude', 'sonnet'), true);
+  assert.equal(store.setDefault('commandcode', 'poolside/laguna-s-2.1-free'), true);
+  assert.equal(store.getDefault('commandcode'), 'poolside/laguna-s-2.1-free');
+  const reopened = createModelStore(file);
+  assert.equal(reopened.getDefault('commandcode'), 'poolside/laguna-s-2.1-free');
+  assert.equal(reopened.getDefault('claude'), 'sonnet');
+  assert.equal(reopened.get('111'), 'gpt-6-luna:high');
+  assert.equal(reopened.get('222'), undefined);
+});
+
+test('falha ao salvar padrão preserva o estado em memória e no banco', () => {
+  const file = tmpFile();
+  const errors = [];
+  const store = createModelStore(file, { onError: (msg) => errors.push(msg) });
+  store.setDefault('commandcode', 'reflection/beam:free');
+  assert.equal(store.setDefault('commandcode', null), false);
+  assert.equal(store.getDefault('commandcode'), 'reflection/beam:free');
+  assert.equal(createModelStore(file).getDefault('commandcode'), 'reflection/beam:free');
+  assert.equal(errors.length, 1);
+});
+
 test('set grava e get devolve; persiste entre instâncias', () => {
   const file = tmpFile();
   createModelStore(file).set('111', 'sonnet');

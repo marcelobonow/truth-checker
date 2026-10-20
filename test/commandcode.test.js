@@ -27,7 +27,7 @@ test('buildRequest web: allowlist só web, sem skills, sem yolo, com teto de tur
   assert.ok(args.includes('--no-skills'));
   assert.ok(!args.includes('--yolo'));
   assert.equal(flagValue(args, '--max-turns'), '8');
-  assert.equal(prompt, 'oi');
+  assert.ok(prompt.endsWith('\n\noi'));
 });
 
 test('buildRequest full: todas as ferramentas e --yolo, sem --no-skills, cwd no system prompt', () => {
@@ -45,7 +45,7 @@ test('buildRequest: --mod aponta para commandcode/mod.ts e o system prompt é o 
   const sys = modOption(args, 'systemPrompt');
   assert.match(sys, /Discord/);
   assert.match(sys, /NO_REPLY/);
-  assert.ok(sys.endsWith('Premissa: X.'));
+  assert.ok(sys.includes('\n\nPremissa: X.\n\nSe houver'));
 });
 
 test('buildRequest: -m/--effort/--resume só quando informados', () => {
@@ -55,6 +55,18 @@ test('buildRequest: -m/--effort/--resume só quando informados', () => {
   assert.equal(flagValue(args, '--resume'), 's1');
   const plain = cc.buildRequest({ mode: 'web', prompt: '' }).args;
   assert.ok(!plain.includes('-m') && !plain.includes('--effort') && !plain.includes('--resume'));
+  const noEffort = cc.buildRequest({ mode: 'web', prompt: '', model: 'some/model-without-effort', effort: null }).args;
+  assert.equal(flagValue(noEffort, '-m'), 'some/model-without-effort');
+  assert.ok(!noEffort.includes('--effort'));
+});
+
+test('buildRequest: Laguna S ignora esforço configurado porque não oferece ajuste de reasoning', () => {
+  const { args, prompt } = cc.buildRequest({
+    mode: 'web', prompt: 'oi', model: 'poolside/laguna-s-2.1-free', effort: 'low',
+  });
+  assert.equal(flagValue(args, '-m'), 'poolside/laguna-s-2.1-free');
+  assert.ok(!args.includes('--effort'));
+  assert.match(prompt, /Reasoning solicitado: padrão do CLI/);
 });
 
 const line = (o) => JSON.stringify(o);
