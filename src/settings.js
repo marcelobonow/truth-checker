@@ -27,13 +27,14 @@ export const FULL_ACCESS_GUILD_IDS = [
 export const BACKEND = 'commandcode';
 
 // false: só os usuários acima são atendidos (menções de outras pessoas são ignoradas).
-// true: qualquer pessoa que mencionar @bot recebe resposta, sempre em modo web.
+// true: qualquer pessoa que mencionar @bot pode ser atendida em modo web;
+// a regra de resposta continua dependendo de MENTIONS_AND_REPLIES_ONLY.
 export const MENTION_ANYONE = false;
 
 // true: só encaminha menções ao bot (@bot / @Nome) ou replies a uma mensagem
-// dele. Qualquer outra mensagem é ignorada já na chegada, sem passar pelo
-// juiz, dicionário ou análise de contexto. false mantém o comportamento do
-// JUDGE abaixo.
+// dele. Isso é apenas um filtro de entrada: a menção/reply não obriga resposta;
+// o modelo decide pelo conteúdo. Qualquer outra mensagem é ignorada já na
+// chegada. false mantém o comportamento do JUDGE abaixo.
 export const MENTIONS_AND_REPLIES_ONLY = true;
 
 // Nomes que também acionam o bot quando escritos como texto, sem selecionar a
@@ -43,8 +44,8 @@ export const BOT_NAME_ALIASES = [
   'Truth-Check',
 ];
 
-// Juiz local (só quando "responder: se couber", isto é, sem menção nem reply
-// ao bot): pontua as mensagens novas e o contexto na CPU (src/heuristic.js,
+// Juiz local (no modo não estrito, para mensagens sem menção nem reply ao bot):
+// pontua as mensagens novas e o contexto na CPU (src/heuristic.js,
 // termos em src/dicionario.js) e só chama o modelo se passar dos limiares.
 // null desliga (chama sempre; o modelo ainda pode responder NO_REPLY).
 export const JUDGE = {

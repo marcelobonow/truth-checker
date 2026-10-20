@@ -1076,6 +1076,10 @@ async function processBatch(items, run) {
   if (fresh) clearContextMarkers(key);
   const marker = contextMarkerKey(key, last.channelId);
   const { full: fullContext, fresh: context } = await fetchContext(items, sentUpTo.get(marker));
+  const forced = items.some((i) => i.replyToBot || i.mentionsBot);
+  // No modo estrito, menção/reply só permite que a mensagem chegue ao modelo;
+  // a própria mensagem ainda decide se há algo que mereça resposta.
+  const forceReply = forced && !config.mentionsAndRepliesOnly;
   const promptWith = (ctx) => buildUserMessage({
     guildName: last.guild.name,
     channelName: last.channel.name,
@@ -1087,13 +1091,13 @@ async function processBatch(items, run) {
     referenceTimestamp: last.createdTimestamp,
     emphasizeQuote: backend.name === 'commandcode' || backend.name === 'codex',
     userPrompt,
+    forceReply,
   });
   const prompt = promptWith(context);
 
   // Fora do modo estrito, sem menção nem reply ao bot, o juiz local (CPU, sem
   // modelo) decide antes se vale gerar; recebe o contexto completo, não só o
   // novo. No modo estrito, a mensagem já foi filtrada na chegada.
-  const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   if (config.judge && !forced) {
     const verdict = judge({
       items: items.map((i) => ({ content: i.content, authorId: i.message.author.id, timestamp: i.message.createdTimestamp, replyToOther: Boolean(i.quoted) && !i.replyToBot })),

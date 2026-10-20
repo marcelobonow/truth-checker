@@ -14,8 +14,11 @@ Codex em `src/settings.js`. Design original em
 - Com `MENTIONS_AND_REPLIES_ONLY = true` em `src/settings.js`, o bot só
   encaminha menções `@bot` (real ou "@Nome" escrito) e replies a mensagens
   dele. Qualquer outra mensagem, inclusive perguntas soltas, é ignorada sem
-  juiz, dicionário ou análise de contexto. Com a flag desligada, reply a uma
-  mensagem do bot ou menção `@bot` responde sempre. As outras mensagens passam antes por um juiz local, sem
+  juiz, dicionário ou análise de contexto. Esse filtro não obriga uma resposta:
+  menção/reply só aciona a análise, e o modelo pode responder `NO_REPLY` se o
+  conteúdo não for dirigido a ele (por exemplo, um ping para chamar a atenção
+  de outras pessoas). Com a flag desligada, reply a uma mensagem do bot ou
+  menção `@bot` responde sempre. As outras mensagens passam antes por um juiz local, sem
   modelo ([src/heuristic.js](src/heuristic.js)): pontua a mensagem ("?",
   interrogativas, pedidos, termos de [src/dicionario.js](src/dicionario.js))
   mais um bônus do contexto recente, e só chama o modelo se passar dos

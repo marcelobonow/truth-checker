@@ -130,9 +130,10 @@ const formatTime = (ts) => {
 
 // `emphasizeQuote`: modelos menores tomam a pergunta citada num reply a outra
 // pessoa como se fosse para o bot; repete na própria citação que não é.
-export function buildUserMessage({ guildName, channelName, authorName, items, context = [], mentions = [], indexed = false, referenceTimestamp = Date.now(), emphasizeQuote = false, userPrompt }) {
-  const forced = items.some((i) => i.replyToBot || i.mentionsBot);
-  let header = `[discord] servidor: ${guildName} | canal: #${channelName} | autor: ${authorName} | responder: ${forced ? 'sempre' : 'se couber'}`;
+// `forceReply` pode sobrescrever o padrão de menção/reply; o modo estrito usa
+// esses sinais só como filtro de entrada, sem obrigar uma resposta.
+export function buildUserMessage({ guildName, channelName, authorName, items, context = [], mentions = [], indexed = false, referenceTimestamp = Date.now(), emphasizeQuote = false, userPrompt, forceReply = items.some((i) => i.replyToBot || i.mentionsBot) }) {
+  let header = `[discord] servidor: ${guildName} | canal: #${channelName} | autor: ${authorName} | responder: ${forceReply ? 'sempre' : 'se couber'}`;
   if (indexed && mentions.length > 0) {
     header += `\npessoas citadas: ${mentions.map((m) => `${m.name} → <@${m.id}>`).join(', ')}`;
   }
