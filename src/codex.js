@@ -13,10 +13,10 @@ export function webDir(root) {
 }
 
 export function buildArgs({ mode, sessionId, workDir, model, effort, imageFile }) {
-  if (!['web', 'full', 'vision', 'analysis'].includes(mode)) throw new Error(`modo desconhecido: ${mode}`);
+  if (!['web', 'full', 'vision'].includes(mode)) throw new Error(`modo desconhecido: ${mode}`);
 
   const args = ['exec'];
-  if (sessionId && !['vision', 'analysis'].includes(mode)) args.push('resume', sessionId);
+  if (sessionId && mode !== 'vision') args.push('resume', sessionId);
   args.push('--json', '--skip-git-repo-check', '--ignore-user-config');
   if (workDir && !sessionId) args.push('--cd', workDir);
   if (model) args.push('--model', model);
@@ -27,10 +27,6 @@ export function buildArgs({ mode, sessionId, workDir, model, effort, imageFile }
   if (mode === 'full') {
     // O modo full só é liberado pelo bot nos servidores configurados.
     args.push('--dangerously-bypass-approvals-and-sandbox');
-  } else if (mode === 'analysis') {
-    // A análise lê apenas os snapshots dentro de um cwd isolado; shell fica
-    // disponível em sandbox somente leitura para abrir esses arquivos.
-    args.push('--config', `sandbox_mode=${JSON.stringify('read-only')}`);
   } else {
     // Sem shell/ferramentas locais no web e na visão; visão recebe a imagem
     // diretamente pela flag --image.
@@ -158,7 +154,6 @@ export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, eff
     args: buildArgs({ mode, sessionId, workDir, model, effort, imageFile }),
     prompt: adjustedPrompt,
     instructions: codexInstructions({ mode, workDir, extraPrompt }),
-    systemPrompt: codexInstructions({ mode, workDir, extraPrompt }),
-    sessionId: mode === 'analysis' ? undefined : sessionId,
+    sessionId,
   };
 }

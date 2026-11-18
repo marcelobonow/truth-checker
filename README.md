@@ -80,28 +80,24 @@ Codex em `src/settings.js`. Design original em
   no canal; se a lista ultrapassar 2000 caracteres, envia no privado de quem
   executou o comando. Ao mudar ou remover o prompt, a próxima resposta inicia
   uma nova sessão no servidor para deixar a preferência anterior fora do histórico.
-
-## Análise diária de conversas
-
-`/analise-conversas` prepara um arquivo JSONL com o dia selecionado e o
-contexto dos dias vizinhos. A IA recebe o caminho absoluto, a quantidade de
-eventos e o tamanho da fonte. Ela consulta o arquivo conforme necessário e
-entrega uma única análise, sem chamadas por bloco nem consolidação de
-checkpoints. Claude usa `Read`; Command Code usa `read_file`; Codex usa
-comandos de leitura em sandbox somente leitura.
-As análises usam uma fila própria: uma análise em andamento não impede o bot
-de responder às menções e replies no Discord.
-
-As citações são verificadas contra a fonte antes de gerar a memória. Quando
-a resposta precisa de correção, ela é disponibilizada em um segundo arquivo
-para até dois reparos, sem pedir uma nova análise inteira. O agendador mantém
-um orçamento total de chamadas e o timeout do backend; leituras feitas pela
-IA dentro de uma execução não são blocos do agendador. Claude e Command Code
-permitem até 80 turnos por execução para leitura e consultas.
-
-Após alterar a implementação, reinicie o processo do bot para carregar o
-fluxo novo. Uma análise que terminou com erro pode ser solicitada novamente
-com `/analise-conversas` para o mesmo canal e dia.
+- Cota mensal por usuário do Discord, compartilhada entre servidores e canais.
+  O primeiro lote encaminhado ao modelo cadastra o usuário como `free` em
+  `user-quotas.db` (SQLite). As cotas padrão são US$ 1 (`free`), US$ 5 (`vip`)
+  e US$ 15 (`premium`). Configure os limites no `.env`. `/quota` mostra em
+  privado sua categoria, seu consumo e o saldo do mês.
+- `/status` mostra o uso do plano do provedor, a sessão e a fila, só para
+  `ADMIN_USER_ID`. O admin também pode usar `/status-list` para ver os 20
+  usuários que mais consumiram no mês. Use `/status-list usuario:<usuário>`
+  para consultar uma pessoa. Use `/status-set usuario:<usuário> categoria:<free|vip|premium>`
+  para mudar a categoria e preservar o consumo do mês. A conta de admin tem cota
+  ilimitada, com consumo mensal registrado e visível em `/quota` e `/status-list`.
+- O consumo renova no primeiro dia do mês, à meia-noite em `America/Sao_Paulo`.
+  Ao atingir a cota, o próximo lote recebe um aviso antes de chamar o modelo.
+  O bot soma o custo após concluir o lote, incluindo análises de imagem
+  bem-sucedidas e gerações que retornam `NO_REPLY`. Lotes com erro ou falha de
+  entrega ficam sem cobrança. O custo usa o valor informado pelo CLI ou as
+  taxas internas de entrada e saída do `.env` aplicadas aos tokens (incluindo
+  tokens de entrada em cache). Sem custo ou tokens, vale `QUOTA_MISSING_USAGE_USD`.
 
 ## Requisitos
 
@@ -138,7 +134,7 @@ da raiz do projeto antes de ler as configurações.
 
 - Use `/model-default` para escolher o modelo e esforço padrão de respostas;
   as opções disponíveis ficam em `MODEL_CHOICES` de `src/settings.<backend>.js`.
-  Os modelos auxiliares de visão e análise continuam configurados nas settings.
+  O modelo de visão é configurado nas settings do backend.
 - O modo web roda sem skills e sem servidores MCP (`--disable-slash-commands`,
   `--strict-mcp-config`): system prompt menor a cada chamada.
 - Sessões longas custam mais a cada mensagem (todo o histórico volta ao

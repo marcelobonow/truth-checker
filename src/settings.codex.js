@@ -3,7 +3,6 @@
 export const MODEL = {
   // O padrão web/full fica no models.db (/model-default).
   vision: 'gpt-6-luna',
-  analysis: 'gpt-6-luna',
 };
 
 // Luna é o único modelo disponível no seletor /model para este backend.
@@ -15,7 +14,6 @@ export const EFFORT = {
   web: 'low',
   full: 'low',
   vision: 'low',
-  analysis: null, // null = mesmo do web
 };
 
 // O Codex CLI não expõe atualmente um limite equivalente a --max-turns.

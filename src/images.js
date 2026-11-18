@@ -52,18 +52,10 @@ export function collectImages({ message, reference = null, mentionsBot, isTarget
   const rejected = [];
   const add = (msg, attachmentSource, linkSource) => {
     if (!msg) return;
-    const source = {
-      sourceMessageId: msg.id == null ? null : String(msg.id),
-      sourceGuildId: msg.guildId == null ? null : String(msg.guildId),
-      sourceChannelId: msg.channelId == null ? null : String(msg.channelId),
-      sourceAuthorId: msg.author?.id == null ? null : String(msg.author.id),
-      sourceAuthorName: msg.member?.displayName ?? msg.author?.globalName ?? msg.author?.username ?? 'desconhecido',
-      sourceCreatedAt: msg.createdAt?.toISOString?.() ?? (msg.createdTimestamp != null ? new Date(msg.createdTimestamp).toISOString() : null),
-    };
     const picked = pickImages([...msg.attachments.values()], { max: Infinity, maxBytes: limits.maxBytes });
     rejected.push(...picked.rejected);
-    candidates.push(...picked.images.map((i) => ({ ...i, ...source, source: attachmentSource })));
-    candidates.push(...imageLinks(msg.content).map((url) => ({ url, name: url, ...source, source: linkSource })));
+    candidates.push(...picked.images.map((i) => ({ ...i, source: attachmentSource })));
+    candidates.push(...imageLinks(msg.content).map((url) => ({ url, name: url, source: linkSource })));
   };
   add(message, 'anexo', 'link');
   add(reference, 'citada', 'link citado');
@@ -155,7 +147,7 @@ export async function describeImage({ file, hint = '', context = [], backend, co
     if (/^ERRO:/i.test(text)) throw new Error(text.replace(/^ERRO:\s*/i, ''));
     if (!text) throw new Error('descrição vazia');
     monitor?.finishGeneration({ id: generationId, finishedAt: Date.now(), modelSucceeded: true, outcome: 'vision_complete' });
-    return text.slice(0, config.images.maxChars);
+    return { description: text.slice(0, config.images.maxChars), costUsd: res.costUsd, tokenUsage: res.tokenUsage };
   } catch (err) {
     monitor?.finishGeneration({ id: generationId, finishedAt: Date.now(), modelSucceeded: false, outcome: err.name === 'AbortError' ? 'cancelled' : 'failed' });
     throw err;
@@ -174,29 +166,15 @@ export async function analyzeImages(images, { dir, fileBase, hint, context = [],
     let result;
     try {
       const file = await download(image, { dir, fileName: `${fileBase}-${i + 1}`, maxBytes: config.images.maxBytes, fetchImpl });
-      const description = await describeImage({ file, hint, context, backend, config, monitor, analyzedMessageCount: analyzedMessageCount + context.length });
-      result = mediaMetadata(image, { source: image.source, name: image.name, description });
+      const analysis = await describeImage({ file, hint, context, backend, config, monitor, analyzedMessageCount: analyzedMessageCount + context.length });
+      result = { source: image.source, name: image.name, ...analysis };
     } catch (err) {
-      result = mediaMetadata(image, { source: image.source, name: image.name, error: err.message });
+      result = { source: image.source, name: image.name, error: err.message };
     }
     onResult(result, (Date.now() - started) / 1000);
     results.push(result);
   }
   return results;
-}
-
-function mediaMetadata(image, result) {
-  return {
-    ...result,
-    ...(image.mediaAnalysisId ? { mediaAnalysisId: image.mediaAnalysisId } : {}),
-    ...(image.sourceMessageId ? { sourceMessageId: image.sourceMessageId } : {}),
-    ...(image.sourceGuildId ? { sourceGuildId: image.sourceGuildId } : {}),
-    ...(image.sourceChannelId ? { sourceChannelId: image.sourceChannelId } : {}),
-    ...(image.sourceAuthorId ? { sourceAuthorId: image.sourceAuthorId } : {}),
-    ...(image.sourceAuthorName ? { sourceAuthorName: image.sourceAuthorName } : {}),
-    ...(image.sourceCreatedAt ? { sourceCreatedAt: image.sourceCreatedAt } : {}),
-    ...(image.id != null ? { attachmentId: String(image.id) } : {}),
-  };
 }
 
 // Bloco que entra na mensagem nova no lugar da imagem.

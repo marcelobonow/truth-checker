@@ -17,7 +17,6 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const MOD = path.join(ROOT, 'commandcode', 'mod.ts');
 // O modelo carrega ferramentas sob demanda via `search_tools`: precisa estar liberada.
 const WEB_TOOLS = 'web_search,web_fetch,search_tools';
-const ANALYSIS_TOOLS = 'read_file,web_search,web_fetch,search_tools';
 
 // cwd do modo web: pasta vazia (o CLI põe git status/commits do cwd
 // no system prompt e leria um AGENTS.md da raiz do bot).
@@ -39,19 +38,14 @@ export function buildRequest({ mode, sessionId, workDir, extraPrompt, model, eff
   } else if (mode === 'vision') {
     // Descrição de imagem: só read_file (limitado ao workspace = pasta da imagem), sem sessão
     args.push('--mod-option', 'tools=read_file,search_tools', '--no-skills', '--max-turns', '4');
-  } else if (mode === 'analysis') {
-    // A pasta de trabalho da análise contém apenas os snapshots permitidos.
-    // O modelo pode consultar o arquivo e pesquisar referências externas,
-    // mantendo ferramentas de escrita e execução fora da allowlist.
-    args.push('--mod-option', `tools=${ANALYSIS_TOOLS}`, '--no-skills', '--max-turns', String(maxTurns ?? 80));
   } else {
     args.push('--mod-option', 'tools=*', '--yolo');
   }
   if (model) args.push('-m', model);
   // null (ou undefined) significa que o modelo não deve receber esforço ajustável.
   if (effort != null) args.push('--effort', effort);
-  if (sessionId && !['vision', 'analysis'].includes(mode)) args.push('--resume', sessionId);
-  return { args, prompt, systemPrompt: instructions };
+  if (sessionId && mode !== 'vision') args.push('--resume', sessionId);
+  return { args, prompt };
 }
 
 // Última linha `type: "result"`. `subtype: "error"` (ex.: sessão inexistente)

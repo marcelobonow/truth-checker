@@ -7,7 +7,7 @@ import { askClaude } from '../src/bridge.js';
 import { WEB_MAX_TURNS } from '../src/settings.commandcode.js';
 
 for (const backend of [claude, commandcode, codex]) {
-  for (const mode of ['web', 'full', 'vision', 'analysis']) test(`${backend.name}/${mode}: metadados precedem o pedido e respeitam as flags`, () => {
+  for (const mode of ['web', 'full', 'vision']) test(`${backend.name}/${mode}: metadados precedem o pedido e respeitam as flags`, () => {
     const request = backend.buildRequest({ mode, prompt: 'pedido original', model: 'modelo escolhido', effort: 'high', maxTurns: 10 });
     assert.ok(request.prompt.startsWith('[ambiente de execução'));
     assert.ok(request.prompt.endsWith('\n\npedido original'));

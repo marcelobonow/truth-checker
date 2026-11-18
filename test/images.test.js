@@ -58,40 +58,6 @@ test('collectImages: sem mensagem citada, só a própria', () => {
   assert.deepEqual(images.map((i) => i.name), ['a.png']);
 });
 
-test('collectImages liga cada imagem ao autor e à mensagem de origem', () => {
-  const message = {
-    id: 'request', guildId: 'g1', channelId: 'c1', createdTimestamp: Date.parse('2026-10-08T17:00:00Z'), content: 'olha',
-    author: { id: 'u1', username: 'pessoa' }, member: { displayName: 'Pessoa' },
-    attachments: new Map([['a', att('a')]]),
-  };
-  const reference = {
-    id: 'original', guildId: 'g1', channelId: 'c1', createdTimestamp: Date.parse('2026-10-08T16:00:00Z'), content: '',
-    author: { id: 'u2', username: 'outra' }, member: { displayName: 'Outra' },
-    attachments: new Map([['b', att('b')]]),
-  };
-  const { images } = collectImages({ message, reference, mentionsBot: true, isTarget: true, limits: { max: 3, maxBytes: 1000 } });
-  assert.deepEqual(images.map((image) => [image.sourceMessageId, image.sourceAuthorId, image.sourceAuthorName]), [
-    ['request', 'u1', 'Pessoa'], ['original', 'u2', 'Outra'],
-  ]);
-  assert.deepEqual(images.map((image) => [image.sourceGuildId, image.sourceChannelId]), [['g1', 'c1'], ['g1', 'c1']]);
-});
-
-test('analyzeImages mantém o vínculo de origem no resultado persistível', async () => {
-  const dir = tmpDir();
-  const backend = { buildRequest: ({ prompt }) => ({ args: [], prompt }), run: async () => ({ text: 'Descrição da imagem.', isError: false }) };
-  const config = { bin: 'cli', model: {}, effort: {}, images: { maxBytes: 100, maxChars: 100, timeoutMs: 5_000 } };
-  const images = [{ source: 'citada', name: 'foto.png', url: 'https://x/foto.png', mediaAnalysisId: 'media-1', sourceMessageId: 'original', sourceGuildId: 'g1', sourceChannelId: 'c1', sourceAuthorId: 'u2', sourceAuthorName: 'Outra', sourceCreatedAt: '2026-10-08T16:00:00.000Z' }];
-  try {
-    const [result] = await analyzeImages(images, { dir, fileBase: 'request', hint: '', context: [], backend, config, fetchImpl: fakeFetch(Buffer.from([1])) });
-    assert.equal(result.mediaAnalysisId, 'media-1');
-    assert.equal(result.sourceMessageId, 'original');
-    assert.equal(result.sourceGuildId, 'g1');
-    assert.equal(result.sourceChannelId, 'c1');
-    assert.equal(result.sourceAuthorName, 'Outra');
-    assert.equal(result.description, 'Descrição da imagem.');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bot-imagens-'));
 }
@@ -148,8 +114,8 @@ test('describeImage: roda o backend em modo vision, cwd na pasta, com o caminho 
   };
   const config = { bin: 'cli', model: { web: 'w', vision: 'v' }, effort: { web: 'low', vision: undefined }, images: { maxChars: 8000, timeoutMs: 5000 } };
   const context = [{ authorName: 'Ana', content: 'olha meu gato' }, { authorName: 'Bot', content: 'bonito' }];
-  const text = await describeImage({ file, hint: 'que raça é?', context, backend, config });
-  assert.equal(text, 'Um gato laranja.');
+  const { description } = await describeImage({ file, hint: 'que raça é?', context, backend, config });
+  assert.equal(description, 'Um gato laranja.');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cwd, dir);
   assert.equal(calls[0].bin, 'cli');
@@ -174,7 +140,8 @@ test('describeImage: corta em maxChars, trata ERRO: e isError como falha, apaga 
 
   fs.writeFileSync(file, 'x');
   backend.run = async () => ({ text: 'abcdefgh', isError: false });
-  assert.equal(await describeImage({ file, backend, config }), 'abcde');
+  const { description } = await describeImage({ file, backend, config });
+  assert.equal(description, 'abcde');
 
   fs.writeFileSync(file, 'x');
   backend.run = async () => ({ text: 'ERRO: arquivo corrompido', isError: false });
@@ -206,7 +173,7 @@ test('analyzeImages: um resultado por imagem, em sequência; falha de uma não d
     buildRequest: (req) => ({ args: [], prompt: req.prompt }),
     run: async ({ prompt }) => {
       hints.push(prompt);
-      return { text: prompt.includes('-2.png') ? 'ERRO: ilegível' : 'Descrição ok.', isError: false };
+      return { text: prompt.includes('-2.png') ? 'ERRO: ilegível' : 'Descrição ok.', isError: false, costUsd: 0.01 };
     },
   };
   const config = { bin: 'cli', model: {}, effort: {}, images: { maxBytes: 100, maxChars: 8000, timeoutMs: 5000 } };
@@ -217,9 +184,12 @@ test('analyzeImages: um resultado por imagem, em sequência; falha de uma não d
     { source: 'citada', name: 'c.png', url: 'https://x/3' },
   ];
   const seen = [];
-  const results = await analyzeImages(images, { dir, fileBase: 'm', hint: 'oi', backend, config, fetchImpl, onResult: (r) => seen.push(r.name) });
+  const results = await analyzeImages(images, {
+    dir, fileBase: 'm', hint: 'oi', backend, config, fetchImpl,
+    onResult: (r) => seen.push(r.name),
+  });
   assert.deepEqual(results, [
-    { source: 'anexo', name: 'a.png', description: 'Descrição ok.' },
+    { source: 'anexo', name: 'a.png', description: 'Descrição ok.', costUsd: 0.01, tokenUsage: undefined },
     { source: 'link', name: 'https://x/2', error: 'ilegível' },
     { source: 'citada', name: 'c.png', error: 'HTTP 500 ao baixar https://x/3' },
   ]);

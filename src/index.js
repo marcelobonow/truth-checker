@@ -1,8 +1,7 @@
 import './environment.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
-import { ApplicationCommandOptionType, ChannelType, Client, Events, GatewayIntentBits, InteractionContextType, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, Status, TextInputBuilder, TextInputStyle } from 'discord.js';
+import { ApplicationCommandOptionType, Client, Events, GatewayIntentBits, InteractionContextType, LabelBuilder, MessageFlags, ModalBuilder, Status, TextInputBuilder, TextInputStyle } from 'discord.js';
 import { createSessionStore } from './sessions.js';
 import { createQueue } from './queue.js';
 import { createBatcher } from './batcher.js';
@@ -17,17 +16,11 @@ import { collectImages, analyzeImages } from './images.js';
 import { collectFiles, readFiles, rejectedNonImages } from './files.js';
 import { createModelStore, DEFAULT_MODEL_CHOICE, formatModelList, normalizeChoices, choiceValue, choiceName } from './models.js';
 import { createUserPromptStore, replyPromptList, MAX_USER_PROMPT_LENGTH } from './user-prompts.js';
+import { createUserQuotaStore, estimateCostUsd, readQuotaSettings, USER_TIERS } from './user-quotas.js';
 import { createDisabledMonitor, createMonitor } from './monitor.js';
 import { createBackendMetricHandler } from './monitor-events.js';
-import { createConversationArchive, localDateInZone } from './conversation-archive.js';
-import { createConversationScheduler } from './conversation-scheduler.js';
-import { runAnalysisFromFile } from './conversation-analysis.js';
-import { createConversationBackendCaller } from './conversation-backend.js';
-import { createConversationCron, parseScheduledDateTime, truncateDiscordContent } from './conversation-cron.js';
-import { systemPrompt } from './prompts.js';
-import cron from 'node-cron';
 import { logger } from './logger.js';
-import { BACKEND, CONVERSATION, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, BOT_NAME_ALIASES, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
+import { BACKEND, TARGET_USER_IDS, TARGET_ROLE_IDS, FULL_ACCESS_GUILD_IDS, MENTION_ANYONE, MENTIONS_AND_REPLIES_ONLY, BOT_NAME_ALIASES, JUDGE, CONTEXT, SESSION, RESET_ON_START, IMAGES, FILES } from './settings.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const env = process.env;
@@ -49,13 +42,7 @@ function required(name) {
 }
 
 // CLI que gera as respostas e os modelos do backend ativo
-const responseSelection = await selectBackend(BACKEND).catch(fatal);
-const { backend, settings: responseSettings } = responseSelection;
-const { MODEL, EFFORT, WEB_MAX_TURNS, MODEL_CHOICES = [] } = responseSettings;
-const analysisBackendName = CONVERSATION.analysisBackend || BACKEND;
-const analysisSelection = CONVERSATION.analysisEnabled ? await selectBackend(analysisBackendName).catch(fatal) : null;
-const analysisBackend = analysisSelection?.backend ?? backend;
-const analysisSettings = analysisSelection?.settings ?? responseSettings;
+const { backend, settings: { MODEL, EFFORT, WEB_MAX_TURNS, MODEL_CHOICES = [] } } = await selectBackend(BACKEND).catch(fatal);
 // Modelos que os usuários podem escolher (/model): allowlist do settings do
 // backend; lista vazia desliga /model e /model-list (docs/model-selector.md).
 // O valor da escolha (o que o Discord devolve e o banco guarda) é
@@ -114,22 +101,6 @@ const config = {
   imagesDir: path.join(ROOT, 'imagens'),
   session: { maxMessages: SESSION.maxMessages, maxContextTokens: SESSION.maxContextTokens, idleMs: SESSION.idleMinutes * 60_000 },
 };
-const conversationConfig = {
-  model: { analysis: analysisSettings.MODEL.analysis ?? analysisSettings.MODEL.web ?? undefined },
-  effort: { analysis: analysisSettings.EFFORT.analysis ?? analysisSettings.EFFORT.web ?? undefined },
-  extraPrompt: {},
-  workDir: ROOT,
-  bin: CONVERSATION.analysisEnabled ? analysisBackend.resolveBin(env) : bin,
-  timeoutMs: Number(env.CONVERSATION_ANALYSIS_TIMEOUT_MS) || config.timeoutMs,
-};
-const analysisSystemPrompt = systemPrompt({ mode: 'analysis', workDir: ROOT });
-const analyzerConfigHash = crypto.createHash('sha256').update(JSON.stringify({
-  version: 6, backend: analysisBackend.name, model: conversationConfig.model.analysis,
-  effort: conversationConfig.effort.analysis, timeZone: CONVERSATION.timeZone,
-  analysisPrompt: analysisSystemPrompt,
-  maxCallsPerAnalysis: CONVERSATION.maxCallsPerAnalysis,
-  analysisInputFormat: 'single-file-jsonl-v1',
-})).digest('hex');
 // O Discord repete TypingStart a cada ~10 s enquanto a pessoa digita: o prazo
 // após "digitando" precisa cobrir esse intervalo, senão o lote fecha no meio.
 config.typingDelayMs = Math.max(config.batchDelayMs, 12_000);
@@ -175,6 +146,14 @@ try {
 } catch (err) {
   fatal(new Error(`não consegui abrir user-prompts.db: ${err.message}`));
 }
+let quotaSettings;
+let userQuotaStore;
+try {
+  quotaSettings = readQuotaSettings(env);
+  userQuotaStore = createUserQuotaStore(path.join(ROOT, 'user-quotas.db'), quotaSettings.limits);
+} catch (err) {
+  fatal(new Error(`não consegui iniciar o controle de cotas: ${err.message}`));
+}
 if (RESET_ON_START) {
   const n = store.clearAll();
   if (n > 0) logger.info(`sessões anteriores apagadas ao iniciar (${n})`);
@@ -185,18 +164,6 @@ const inflight = createInflight();
 // marcador, portanto, precisa ser por sessão e canal: uma conversa em outro
 // canal não pode fazer o bot achar que já viu as mensagens deste aqui.
 const sentUpTo = new Map();
-const activeConversationWork = new Map();
-let conversationCron = null;
-function trackConversationWork(message, change) {
-  if (!message.guildId || !message.channelId) return;
-  const key = `${message.guildId}:${message.channelId}`;
-  const next = Math.max(0, (activeConversationWork.get(key) ?? 0) + change);
-  if (next === 0) {
-    activeConversationWork.delete(key);
-    conversationCron?.wake();
-  }
-  else activeConversationWork.set(key, next);
-}
 const contextMarkerKey = (session, channelId) => `${session}\u0000${channelId}`;
 const clearContextMarkers = (session) => {
   for (const marker of sentUpTo.keys()) {
@@ -230,92 +197,8 @@ try {
   logger.warn(`não consegui abrir monitor.db; métricas desativadas: ${err.message}`);
   monitor = createDisabledMonitor();
 }
-const conversationArchive = CONVERSATION.captureEnabled || CONVERSATION.analysisEnabled
-  ? createConversationArchive({
-    root: path.resolve(ROOT, CONVERSATION.archiveDir),
-    timeZone: CONVERSATION.timeZone,
-    watchChannelIds: config.watchChannelIds,
-    maxQueueBytes: CONVERSATION.maxQueueBytes,
-    onError: (err) => logger.warn({ err }, 'falha ao arquivar conversa'),
-  })
-  : null;
-const conversationCaller = CONVERSATION.analysisEnabled
-  ? createConversationBackendCaller({ backend: analysisBackend, config: conversationConfig, monitor })
-  : null;
-const conversationScheduler = conversationArchive && CONVERSATION.analysisEnabled
-  ? createConversationScheduler({
-    archive: conversationArchive,
-    statePath: path.join(ROOT, 'estado-analise-conversas.json'),
-    memoriesRoot: path.resolve(ROOT, CONVERSATION.memoriesDir),
-    timeZone: CONVERSATION.timeZone,
-    neighborMessages: CONVERSATION.neighborMessages,
-    maxCallsPerAnalysis: CONVERSATION.maxCallsPerAnalysis,
-    maxRetries: CONVERSATION.maxRetries,
-    staleAnalysisAfterMs: CONVERSATION.staleAnalysisAfterMs,
-    isJobIdle: (job) => !activeConversationWork.has(`${job.guildId}:${job.channelId}`),
-    onComplete: async (job, markdown) => {
-      const user = await client.users.fetch(job.requestedBy);
-      await user.send({ content: truncateDiscordContent(markdown), allowedMentions: { parse: [] } });
-    },
-    onFailure: async (job) => {
-      const user = await client.users.fetch(job.requestedBy);
-      const reason = String(job.lastError ?? 'motivo não informado').slice(0, 300);
-      await user.send({
-        content: `Não consegui concluir a análise de #${job.channelName ?? job.channelId} (${job.localDate}) após ${job.attempts} tentativa(s). Motivo: ${reason}. Você pode iniciar outra tentativa com /analise-conversas.`,
-        allowedMentions: { parse: [] },
-      });
-      logger.warn({ tag: 'conversation-analysis', traceId: job.id, guildId: job.guildId, channelId: job.channelId, localDate: job.localDate, attempts: job.attempts }, 'solicitante avisado por DM sobre falha final');
-    },
-    analyzerConfigHash,
-    onError: (err, job) => logger.error({ tag: 'conversation-analysis', traceId: job?.id, err, guildId: job?.guildId, channelId: job?.channelId, localDate: job?.localDate }, 'falha na análise agendada de conversas'),
-    onProgress: (progress, job) => {
-      const detail = { tag: 'conversation-analysis', traceId: job.id, guildId: job.guildId, channelId: job.channelId, canal: job.channelName, servidor: job.guildName, dia: job.localDate };
-      if (progress.phase === 'started') {
-        logger.info({ ...detail, tentativa: job.attempts, scheduledAt: new Date(job.scheduledAt).toISOString() }, 'análise de conversas começou');
-      } else if (progress.phase === 'model_call_started') {
-        logger.info({ ...detail, ...progress }, 'chamada ao modelo iniciada');
-      } else if (progress.phase === 'model_call_completed') {
-        logger.info({ ...detail, ...progress }, 'chamada ao modelo concluída');
-      } else if (progress.phase === 'model_call_failed') {
-        logger.warn({ ...detail, ...progress }, 'chamada ao modelo falhou');
-      } else if (progress.phase === 'analysis_file_ready') {
-        logger.info({ ...detail, ...progress }, 'arquivo completo da conversa preparado para análise');
-      } else if (progress.phase === 'analysis_repair') {
-        logger.warn({ ...detail, ...progress }, 'corrigindo validação da resposta anterior');
-      } else if (progress.phase === 'completed') {
-        const analysis = progress.analysis;
-        const result = analysis ? {
-          resumo: (analysis.summary ?? '').slice(0, 1200),
-          temas: (analysis.topics ?? []).slice(0, 3).map((item) => `${item.name}: ${item.summary}`.slice(0, 300)),
-          interacoes: (analysis.interactions ?? []).slice(0, 3).map((item) => `${item.request} → ${item.outcome}`.slice(0, 300)),
-          funcionou: (analysis.worked ?? []).slice(0, 3).map((item) => item.observation.slice(0, 300)),
-          falhas: (analysis.failed ?? []).slice(0, 3).map((item) => item.observation.slice(0, 300)),
-          mudancasPrompt: (analysis.promptChanges ?? []).slice(0, 3).map((item) => `${item.rule}: ${item.suggestion}`.slice(0, 300)),
-          mudancasCodigo: (analysis.codeChanges ?? []).slice(0, 3).map((item) => `${item.hypothesis} (${item.component})`.slice(0, 300)),
-          limitacoes: (analysis.limitations ?? []).slice(0, 3).map((item) => item.slice(0, 300)),
-        } : undefined;
-        logger.info({ ...detail, ...progress, analysis: result }, 'análise de conversas concluída');
-      } else if (progress.phase === 'incomplete') {
-        logger.warn({ ...detail, ...progress }, 'análise de conversas incompleta');
-      }
-    },
-    analyze: async ({ events, workDir, maxCalls, shouldContinue, onCall, onProgress, metadata }) => {
-      const result = await runAnalysisFromFile({
-        events, workDir, call: conversationCaller, maxCalls,
-        timeZone: CONVERSATION.timeZone, metadata, shouldContinue, onCall, onProgress,
-      });
-      return { ...result, backend: analysisBackend.name, model: conversationConfig.model.analysis, metadata };
-    },
-  })
-  : null;
 let gatewayWasReady = false;
 let shuttingDown = false;
-
-function recordConversationMessage(message) {
-  if (!conversationArchive || !CONVERSATION.captureEnabled || !conversationArchive.captureAllowed(message)) return;
-  void conversationArchive.recordMessage(message)
-    .catch((err) => logger.warn({ err, guildId: message.guildId, channelId: message.channelId }, 'não foi possível salvar mensagem da conversa'));
-}
 
 function sampleConnection() {
   if (!monitor.enabled) return;
@@ -368,10 +251,11 @@ client.on('shardResume', (shardId) => {
 
 // Registro global: mudanças podem levar até ~1h para aparecer no autocomplete.
 const COMMANDS = [
-  { name: 'servidores', description: 'Mostra os servidores em que o bot está', contexts: [InteractionContextType.Guild] },
+  { name: 'tuc-help', description: 'Lista todos os comandos do bot', contexts: [InteractionContextType.Guild] },
+  { name: 'servidores', description: 'Admin: mostra os servidores em que o bot está', contexts: [InteractionContextType.Guild] },
   {
     name: 'sair',
-    description: 'Remove o bot de um servidor',
+    description: 'Admin: remove o bot de um servidor',
     contexts: [InteractionContextType.Guild],
     options: [{
       type: ApplicationCommandOptionType.String,
@@ -382,7 +266,8 @@ const COMMANDS = [
     }],
   },
   { name: 'reset', description: 'Reinicia a sessão do bot neste servidor', contexts: [InteractionContextType.Guild] },
-  { name: 'status', description: 'Mostra se o bot está online, o tamanho da sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
+  { name: 'status', description: 'Admin: mostra o uso do plano, a sessão e a fila de gerações', contexts: [InteractionContextType.Guild] },
+  { name: 'quota', description: 'Mostra sua categoria, o uso no mês e o saldo da sua cota', contexts: [InteractionContextType.Guild] },
   { name: 'metrics', description: 'Mostra desconexões e uso de tokens da última semana', contexts: [InteractionContextType.Guild] },
   {
     name: 'id',
@@ -429,20 +314,27 @@ const COMMANDS = [
     contexts: [InteractionContextType.Guild],
   },
   { name: 'prompt-list', description: 'Mostra os prompts personalizados completos', contexts: [InteractionContextType.Guild] },
-  ...(conversationScheduler ? [{
-    name: 'analise-conversas',
-    description: 'Analisa conversas de um canal agora ou agenda a análise',
+  {
+    name: 'status-list',
+    description: 'Admin: consulta a cota de um usuário ou lista os 20 maiores consumos do mês',
+    contexts: [InteractionContextType.Guild],
+    options: [{ type: ApplicationCommandOptionType.User, name: 'usuario', description: 'Usuário a consultar' }],
+  },
+  {
+    name: 'status-set',
+    description: 'Admin: altera a categoria de cota de um usuário',
     contexts: [InteractionContextType.Guild],
     options: [
-      { type: ApplicationCommandOptionType.String, name: 'dia', description: 'Dia a analisar (YYYY-MM-DD; padrão: hoje)', required: false },
-      { type: ApplicationCommandOptionType.String, name: 'data', description: `Data local para agendar (${CONVERSATION.timeZone}; YYYY-MM-DD)`, required: false },
-      { type: ApplicationCommandOptionType.String, name: 'hora', description: `Hora para agendar (${CONVERSATION.timeZone}; HH:mm; sem data, hoje)`, required: false },
+      { type: ApplicationCommandOptionType.User, name: 'usuario', description: 'Usuário que terá a categoria alterada', required: true },
       {
-        type: ApplicationCommandOptionType.Channel, name: 'canal', description: 'Canal a analisar (padrão: este canal)', required: false,
-        channelTypes: [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.AnnouncementThread, ChannelType.PublicThread, ChannelType.PrivateThread],
+        type: ApplicationCommandOptionType.String,
+        name: 'categoria',
+        description: 'Nova categoria de cota',
+        required: true,
+        choices: USER_TIERS.map((tier) => ({ name: tier, value: tier })),
       },
     ],
-  }] : []),
+  },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -451,16 +343,6 @@ client.once(Events.ClientReady, async (c) => {
   sampleConnection();
   c.user.setPresence({ status: 'online' });
   logger.info(`conectado como ${c.user.tag}`);
-  if (conversationScheduler) {
-    conversationCron = createConversationCron({
-      cron,
-      listJobs: () => conversationScheduler.listScheduledJobs(),
-      tick: () => conversationScheduler.tick(),
-      timeZone: CONVERSATION.timeZone,
-      onError: (err) => logger.error({ tag: 'conversation-analysis', err }, 'cron de análises agendadas falhou'),
-    });
-    await conversationCron.start();
-  }
   try {
     await c.application.commands.set(COMMANDS);
     logger.info(`slash commands registrados: ${COMMANDS.map((cmd) => `/${cmd.name}`).join(', ')}`);
@@ -484,8 +366,6 @@ client.once(Events.ClientReady, async (c) => {
     juiz: config.judge ? { ...config.judge, termos: dictionary.length } : null,
     imagens: config.images.max > 0 ? { ...config.images, modelo: config.model.vision ?? config.model.web ?? 'padrão do CLI' } : null,
     arquivos: config.files.max > 0 ? config.files : null,
-    arquivoConversas: CONVERSATION.captureEnabled ? path.resolve(ROOT, CONVERSATION.archiveDir) : null,
-    analiseConversas: CONVERSATION.analysisEnabled ? { backend: analysisBackend.name, model: conversationConfig.model.analysis ?? 'padrão do CLI', timeZone: CONVERSATION.timeZone } : null,
     webMaxTurns: WEB_MAX_TURNS,
     sessao: SESSION,
   }, 'configuração');
@@ -535,6 +415,59 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
   if (!interaction.isChatInputCommand()) return;
   const ephemeral = { flags: MessageFlags.Ephemeral };
+  if (interaction.commandName === 'tuc-help') {
+    const lines = COMMANDS.map(({ name, description }) => `\`/${name}\` · ${description}`);
+    const pages = splitMessage(lines.join('\n'));
+    await interaction.reply({ content: pages[0], ...ephemeral });
+    for (const content of pages.slice(1)) await interaction.followUp({ content, ...ephemeral });
+    return;
+  }
+  const isAdmin = interaction.user.id === ADMIN_USER_ID;
+  if (['status', 'status-list', 'status-set'].includes(interaction.commandName) && !isAdmin) {
+    await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
+    return;
+  }
+  if (interaction.commandName === 'quota') {
+    const content = formatQuota(userQuotaStore.inspect(interaction.user.id), isAdmin);
+    await interaction.reply({ content, ...ephemeral });
+    return;
+  }
+  if (interaction.commandName === 'status-list') {
+    const user = interaction.options.getUser('usuario');
+    const allowedMentions = { parse: [] };
+    if (!user) {
+      const lines = userQuotaStore.list()
+        .map((row) => `<@${row.userId}> · ${formatQuota(row, row.userId === ADMIN_USER_ID)}`);
+      const pages = splitMessage(lines.join('\n') || 'Nenhum usuário cadastrado.');
+      await interaction.reply({ content: pages[0], allowedMentions, ...ephemeral });
+      for (const content of pages.slice(1)) await interaction.followUp({ content, allowedMentions, ...ephemeral });
+      return;
+    }
+    await interaction.reply({ content: `<@${user.id}> · ${formatQuota(userQuotaStore.inspect(user.id), user.id === ADMIN_USER_ID)}`, allowedMentions, ...ephemeral });
+    return;
+  }
+  if (interaction.commandName === 'status-set') {
+    const user = interaction.options.getUser('usuario', true);
+    const tier = interaction.options.getString('categoria', true);
+    if (user.id === ADMIN_USER_ID) {
+      await interaction.reply({ content: 'A conta de admin tem cota ilimitada.', ...ephemeral });
+      return;
+    }
+    if (!USER_TIERS.includes(tier)) {
+      await interaction.reply({ content: 'Categoria inválida.', ...ephemeral });
+      return;
+    }
+    await interaction.deferReply(ephemeral);
+    try {
+      await queue.add(() => userQuotaStore.setTier(user.id, tier));
+    } catch (err) {
+      logger.error({ err, userId: user.id }, 'falha ao salvar categoria de cota');
+      await interaction.editReply('Não consegui salvar a categoria de cota.');
+      return;
+    }
+    await interaction.editReply({ content: `Categoria atualizada. <@${user.id}> · ${formatQuota(userQuotaStore.inspect(user.id))}`, allowedMentions: { parse: [] } });
+    return;
+  }
   if (interaction.commandName === 'model-default') {
     if (!ADMIN_USER_ID || interaction.user.id !== ADMIN_USER_ID) {
       await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
@@ -600,79 +533,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
   const where = `${interaction.guild?.name ?? 'DM'} #${interaction.channel?.name ?? ''}`;
   const who = interaction.member?.displayName ?? interaction.user.displayName;
-  if (!isTarget({ authorId: interaction.user.id, roleIds: roleIds(interaction.member) }, config)) {
+  if (interaction.commandName !== 'status' && !isTarget({ authorId: interaction.user.id, roleIds: roleIds(interaction.member) }, config)) {
     logger.info({ canal: where, autor: who }, `/${interaction.commandName} recusado: fora da whitelist`);
     await interaction.reply({ content: 'Sem permissão.', ...ephemeral });
-    return;
-  }
-  if (interaction.commandName === 'analise-conversas') {
-    if (!conversationScheduler || !conversationArchive || !CONVERSATION.captureEnabled) {
-      await interaction.reply({ content: 'A captura e a análise de conversas precisam estar habilitadas.', ...ephemeral });
-      return;
-    }
-    const channel = interaction.options.getChannel('canal') ?? interaction.channel;
-    if (!interaction.guildId || !channel || channel.guildId !== interaction.guildId) {
-      await interaction.reply({ content: 'Escolha um canal deste servidor.', ...ephemeral });
-      return;
-    }
-    const permissions = channel.permissionsFor?.(interaction.member);
-    if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
-      await interaction.reply({ content: 'Você precisa ter acesso para ver o canal e seu histórico.', ...ephemeral });
-      return;
-    }
-    const botPermissions = channel.permissionsFor?.(interaction.guild.members.me);
-    if (!botPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
-      await interaction.reply({ content: 'O bot precisa ter acesso para ver o canal e seu histórico.', ...ephemeral });
-      return;
-    }
-    if (!conversationArchive.captureAllowed({ guildId: interaction.guildId, channelId: channel.id, channel })) {
-      await interaction.reply({ content: 'Esse canal não está incluído na captura de conversas.', ...ephemeral });
-      return;
-    }
-
-    let scheduledAt;
-    let localDate;
-    try {
-      const today = localDateInZone(interaction.createdTimestamp, CONVERSATION.timeZone);
-      localDate = interaction.options.getString('dia') ?? today;
-      let executionDate = interaction.options.getString('data');
-      const executionTime = interaction.options.getString('hora');
-      if (executionTime && !executionDate) executionDate = today;
-      if (executionDate && !executionTime) {
-        throw new TypeError('para agendar, informe também a hora (HH:mm); sem data e hora, a análise começa agora');
-      }
-      if (executionDate) {
-        scheduledAt = parseScheduledDateTime(executionDate, executionTime, CONVERSATION.timeZone);
-        if (scheduledAt <= Date.now()) throw new TypeError('a data e hora de execução precisam estar no futuro');
-      } else {
-        scheduledAt = Date.now();
-      }
-    } catch (err) {
-      await interaction.reply({ content: err.message, ...ephemeral });
-      return;
-    }
-
-    await interaction.deferReply(ephemeral);
-    try {
-      await conversationScheduler.schedule({
-        guildId: interaction.guildId, channelId: channel.id, localDate, scheduledAt,
-        requestedBy: interaction.user.id, guildName: interaction.guild.name, channelName: channel.name,
-      });
-      const executionTime = interaction.options.getString('hora');
-      const executionDate = interaction.options.getString('data')
-        ?? (executionTime ? localDateInZone(interaction.createdTimestamp, CONVERSATION.timeZone) : null);
-      const executionDescription = executionDate
-        ? `agendada para ${executionDate} às ${executionTime} ${CONVERSATION.timeZone}`
-        : 'iniciada agora';
-      await interaction.editReply(`Análise de #${channel.name} (${localDate}) ${executionDescription}. Enviarei o resultado por DM.`);
-      logger.info({ tag: 'conversation-analysis', canal: where, canalAnalise: channel.name, dia: localDate, scheduledAt: new Date(scheduledAt).toISOString(), autor: who }, executionDate ? 'análise de conversas agendada' : 'análise de conversas iniciada');
-      if (conversationCron) {
-        void conversationCron.refresh().catch((err) => logger.error({ tag: 'conversation-analysis', err, guildId: interaction.guildId, channelId: channel.id, localDate }, 'falha ao atualizar o cron após iniciar ou agendar análise'));
-      }
-    } catch (err) {
-      logger.warn({ tag: 'conversation-analysis', err, canal: where, canalAnalise: channel.name, dia: localDate }, 'não foi possível iniciar ou agendar a análise de conversas');
-      await interaction.editReply(`Não consegui iniciar ou agendar a análise: ${err.message}`);
-    }
     return;
   }
   if (interaction.commandName === 'id') {
@@ -844,9 +707,6 @@ client.on(Events.TypingStart, (typing) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  // Arquiva antes de qualquer regra de atendimento para manter também o
-  // contexto das mensagens que não acionam o bot.
-  recordConversationMessage(message);
   // menção real ou "@Nome" colado como texto (username, nome global, apelido
   // do servidor ou alias configurado)
   const mentionsBot = message.mentions.users.has(client.user.id)
@@ -865,7 +725,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (skip) {
     // as próprias respostas do bot também chegam aqui: só em debug, para não poluir
     const level = message.author.id === client.user.id ? 'debug' : 'info';
-    logger[level]({ canal: where, autor: who }, `não analisando (${skip}): ${oneLine(message.cleanContent)}`);
+    logger[level]({ canal: where, autor: who }, `não analisando (${skip})`);
     return;
   }
   // pessoas mencionadas de verdade (<@id>), menos o bot: o Claude pode marcá-las ou responder a elas
@@ -881,17 +741,17 @@ client.on(Events.MessageCreate, async (message) => {
   const allowedBot = message.author.bot && config.respondToBotIds.includes(message.author.id);
   if (config.mentionsAndRepliesOnly && !mentionsBot && !allowedBot) {
     if (!message.reference?.messageId) {
-      logger.info({ canal: where, autor: who }, `não analisando (MENTIONS_AND_REPLIES_ONLY): sem menção nem reply: ${oneLine(message.cleanContent)}`);
+      logger.info({ canal: where, autor: who }, 'não analisando (MENTIONS_AND_REPLIES_ONLY): sem menção nem reply');
       return;
     }
     reference = await resolveReference(message, item);
     referenceResolved = true;
     if (!isDirectMessageToBot(item)) {
-      logger.info({ canal: where, autor: who }, `não analisando (MENTIONS_AND_REPLIES_ONLY): reply não é ao bot: ${oneLine(message.cleanContent)}`);
+      logger.info({ canal: where, autor: who }, 'não analisando (MENTIONS_AND_REPLIES_ONLY): reply não é ao bot');
       return;
     }
   }
-  logger.info({ canal: where, autor: who, mencao: mentionsBot, reply: Boolean(message.reference) }, `mensagem recebida: ${oneLine(message.cleanContent)}`);
+  logger.info({ canal: where, autor: who, mencao: mentionsBot, reply: Boolean(message.reference) }, 'mensagem recebida');
   // "@bot" + imagem anexada, ou "@bot" como reply (a citada pode ter imagem),
   // segue mesmo sem texto: a imagem é analisada (só whitelist, só com menção).
   const mayHaveImage = mentionsBot && item.target && config.images.max > 0 && (message.attachments.size > 0 || Boolean(message.reference));
@@ -901,18 +761,14 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  // Entra no lote já (preserva a ordem de chegada); a referência e os anexos
-  // são resolvidos em paralelo e aguardados antes de montar o texto.
-  trackConversationWork(message, 1);
+  // Resolve a referência e lê arquivos antes de montar o texto. A análise
+  // de imagens chama o modelo e roda só depois da consulta de cota.
   item.ready = (referenceResolved ? Promise.resolve(reference) : resolveReference(message, item))
     .then(async (reference) => {
-      await Promise.all([
-        attachImages(item, reference, { where, who }),
-        attachFiles(item, reference, { where, who }),
-      ]);
+      item.reference = reference;
+      await attachFiles(item, reference, { where, who });
     })
-    .catch((err) => logger.warn({ canal: where, autor: who }, `leitura de anexos falhou (${err.message}); seguindo sem eles`))
-    .finally(() => trackConversationWork(message, -1));
+    .catch((err) => logger.warn({ canal: where, autor: who }, `leitura de anexos falhou (${err.message}); seguindo sem eles`));
   const key = `${message.channelId}:${message.author.id}`;
   // Autor mandou mensagem nova com o lote dele na fila ou buscando contexto: cancela e o
   // lote antigo volta para a espera junto com a nova, para uma resposta só.
@@ -946,51 +802,36 @@ async function resolveReference(message, item) {
 
 // Imagens da mensagem (anexos, links) e da citada: baixa, descreve pelo CLI em
 // modo vision e guarda em item.images (src/images.js). Só com menção explícita
-// ao bot e autor na whitelist. Roda enquanto o lote espera; erro em uma imagem
+// ao bot e autor na whitelist. Erro em uma imagem
 // vira um bloco "não foi possível analisar", e o lote segue.
-async function attachImages(item, reference, { where, who }) {
+async function attachImages(item, where) {
   const { message } = item;
-  item.imageTraceId ??= crypto.randomUUID();
   if (config.images.max <= 0) return;
-  const { images, rejected } = collectImages({ message, reference, mentionsBot: item.mentionsBot, isTarget: item.target, limits: config.images });
+  const who = displayName(message);
+  const { images, rejected } = collectImages({ message, reference: item.reference, mentionsBot: item.mentionsBot, isTarget: item.target, limits: config.images });
   for (const r of rejected) {
-    logger.info({ tag: 'image-analysis', traceId: item.imageTraceId ?? message.id, messageId: message.id, canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
+    logger.info({ tag: 'image-analysis', messageId: message.id, canal: where, autor: who }, `imagem ignorada: ${r.name} (${r.reason})`);
   }
   if (images.length === 0) return;
-  trackConversationWork(message, 1);
-  const mediaImages = images.map((image, index) => ({ ...image, mediaAnalysisId: `image:${message.id}:${Date.now()}:${index + 1}:${crypto.randomUUID()}` }));
-  item.mediaAnalysisIds = mediaImages.map((image) => image.mediaAnalysisId);
   const hint = stripBotMention(item.content, message);
-  for (const image of mediaImages) {
-    logger.info({ tag: 'image-analysis', traceId: item.imageTraceId, messageId: message.id, mediaAnalysisId: image.mediaAnalysisId, canal: where, autor: who, dica: hint || undefined }, `imagem recebida: ${image.name} (${image.size != null ? `${(image.size / 1e6).toFixed(1)} MB, ` : ''}${image.source}) → analisando`);
+  for (const image of images) {
+    logger.info({ tag: 'image-analysis', messageId: message.id, canal: where, autor: who }, `imagem recebida: ${image.name} (${image.size != null ? `${(image.size / 1e6).toFixed(1)} MB, ` : ''}${image.source}) → analisando`);
   }
-  // "digitando" durante toda a análise: sinaliza que o fluxo já começou e que
-  // o lote fecha em seguida; a geração assume o indicador depois
-  const typing = startTyping(message.channel);
-  try {
-    // mesmo contexto que a geração recebe (10 do canal + 5 do autor + 5 do bot),
-    // para o analisador saber do que estão falando
-    const { full: context } = await fetchContext([item]);
-    item.images = await queue.add(() => analyzeImages(mediaImages, {
-      dir: config.imagesDir,
-      fileBase: message.id,
-      hint,
-      context,
-      backend,
-      config,
-      monitor,
-      analyzedMessageCount: 1,
-      onResult: (r, seconds) => {
-        const image = mediaImages.find((candidate) => candidate.mediaAnalysisId === r.mediaAnalysisId);
-        const detail = { tag: 'image-analysis', traceId: item.imageTraceId, messageId: message.id, mediaAnalysisId: r.mediaAnalysisId, sourceMessageId: image?.sourceMessageId, canal: where, autor: who, segundos: seconds.toFixed(1) };
-        if (r.error) logger.warn(detail, `falha ao analisar imagem ${r.name}: ${r.error}`);
-        else logger.info({ ...detail, chars: r.description.length, resultado: r.description }, 'imagem descrita');
-      },
-    }), { priority: 'normal' });
-  } finally {
-    typing.stop();
-    trackConversationWork(message, -1);
-  }
+  const { full: context } = await fetchContext([item]);
+  item.images = await analyzeImages(images, {
+    dir: config.imagesDir,
+    fileBase: message.id,
+    hint,
+    context,
+    backend,
+    config,
+    monitor,
+    onResult: (r, seconds) => {
+      const detail = { tag: 'image-analysis', messageId: message.id, canal: where, autor: who, segundos: seconds.toFixed(1) };
+      if (r.error) logger.warn(detail, `falha ao analisar imagem ${r.name}: ${r.error}`);
+      else logger.info({ ...detail, chars: r.description.length }, 'imagem descrita');
+    },
+  });
 }
 
 // Documentos não chamam outro modelo: são extraídos localmente e incluídos no
@@ -1038,15 +879,11 @@ async function shutdown(signal) {
   logger.info(`sinal ${signal} recebido, desligando`);
   shuttingDown = true;
   clearInterval(monitorSampler);
-  conversationCron?.stop();
   monitor.finishConnectionEpisode({ endedAt: Date.now(), reason: 'shutdown' });
   monitor.closeOpenOutages({ endedAt: Date.now(), reason: 'shutdown' });
   await client.destroy();
-  if (conversationArchive) {
-    const flushed = await conversationArchive.flush();
-    if (!flushed) logger.error('captura de conversas não terminou de gravar durante o shutdown');
-  }
   monitor.close();
+  userQuotaStore.close();
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
@@ -1055,46 +892,25 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 async function processBatch(items, run) {
   const { signal } = run;
   if (signal.aborted) return; // cancelado enquanto esperava na fila
-  await Promise.all(items.map((item) => item.ready));
   const { message: last, target } = items.at(-1);
   const mode = resolveMode({ guildId: last.guildId, authorId: last.author.id }, config);
   const key = sessionKey({ guildId: last.guildId, isTarget: target, mode });
   const where = `${last.guild.name} #${last.channel.name}`;
   const { prompt: userPrompt, updatedAt: promptUpdatedAt } = userPromptStore.getState(last.author.id);
-  if (store.get(key) && promptUpdatedAt != null && promptUpdatedAt >= store.startedAt(key)) {
-    store.clear(key);
-    clearContextMarkers(key);
-    logger.info({ canal: where, autor: displayName(last) }, 'sessão reiniciada após mudança do prompt personalizado');
-  }
+  const promptChanged = store.get(key) && promptUpdatedAt != null && promptUpdatedAt >= store.startedAt(key);
   // só a whitelist pode fazer o bot marcar/responder outra pessoa
   const mentions = target ? uniqueBy(items.flatMap((i) => i.mentions ?? []), (m) => m.id) : [];
   const now = Date.now();
   // A sessão retomada já conhece o que recebeu anteriormente. Só acrescenta
   // as mensagens posteriores ao seu marcador neste canal (até o limite de
   // CONTEXT.channel), evitando duplicar o contexto a cada chamada.
-  const fresh = !store.get(key) || sessionResetReason(store.info(key), config.session, now) !== null;
-  if (fresh) clearContextMarkers(key);
+  const fresh = promptChanged || !store.get(key) || sessionResetReason(store.info(key), config.session, now) !== null;
   const marker = contextMarkerKey(key, last.channelId);
-  const { full: fullContext, fresh: context } = await fetchContext(items, sentUpTo.get(marker));
+  const { full: fullContext, fresh: context } = await fetchContext(items, fresh ? undefined : sentUpTo.get(marker));
   const forced = items.some((i) => i.replyToBot || i.mentionsBot);
   // No modo estrito, menção/reply só permite que a mensagem chegue ao modelo;
   // a própria mensagem ainda decide se há algo que mereça resposta.
   const forceReply = forced && !config.mentionsAndRepliesOnly;
-  const promptWith = (ctx) => buildUserMessage({
-    guildName: last.guild.name,
-    channelName: last.channel.name,
-    authorName: displayName(last),
-    items,
-    context: ctx,
-    mentions,
-    indexed: target,
-    referenceTimestamp: last.createdTimestamp,
-    emphasizeQuote: backend.name === 'commandcode' || backend.name === 'codex',
-    userPrompt,
-    forceReply,
-  });
-  const prompt = promptWith(context);
-
   // Fora do modo estrito, sem menção nem reply ao bot, o juiz local (CPU, sem
   // modelo) decide antes se vale gerar; recebe o contexto completo, não só o
   // novo. No modo estrito, a mensagem já foi filtrada na chegada.
@@ -1110,10 +926,23 @@ async function processBatch(items, run) {
     });
     const detail = { canal: where, autor: displayName(last), pontos: `${verdict.own}+${verdict.contextBonus.toFixed(1)}=${verdict.total.toFixed(1)}`, sinais: verdict.hits };
     if (!verdict.reply) {
-      logger.info(detail, `juiz local: não responder: ${oneLine(last.cleanContent)}`);
+      logger.info(detail, 'juiz local: não responder');
       return;
     }
     logger.info(detail, 'juiz local: responder');
+  }
+
+  if (signal.aborted) return;
+  const userId = last.author.id;
+  const quota = userQuotaStore.get(userId);
+  if (userId !== ADMIN_USER_ID && quota.spentUsd >= quota.limitUsd) {
+    await send(last, `Você atingiu sua cota mensal da categoria **${quota.tier}**. A cota renova no primeiro dia do próximo mês.`);
+    return;
+  }
+  if (fresh) clearContextMarkers(key);
+  if (promptChanged) {
+    store.clear(key);
+    logger.info({ canal: where, autor: displayName(last) }, 'sessão reiniciada após mudança do prompt personalizado');
   }
 
   // Modelo do autor: a escolha salva (/model) sobrepõe o padrão global do banco.
@@ -1125,9 +954,15 @@ async function processBatch(items, run) {
   if (savedChoice && !userEntry) {
     logger.warn({ canal: where, autor: displayName(last), escolha: savedChoice }, 'escolha de modelo fora da lista atual: usando o padrão');
   }
-  logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${entry ? choiceName(entry) : (config.model?.[mode] ?? 'padrão do CLI')}`);
-  trackConversationWork(last, 1);
   const typing = startTyping(last.channel);
+  // A primeira chamada ao modelo pode ser a análise de uma imagem.
+  inflight.lock(run);
+  for (const item of items) {
+    await attachImages(item, where).catch((err) => {
+      logger.warn({ err, canal: where }, 'falha ao preparar imagens; seguindo sem elas');
+    });
+  }
+  logger.info({ canal: where, autor: displayName(last), modo: mode, mensagens: items.length, contexto: context.length, sessao: store.get(key) ?? 'nova' }, `gerando com ${entry ? choiceName(entry) : (config.model?.[mode] ?? 'padrão do CLI')}`);
   const started = Date.now();
   const requestedModel = entry?.model ?? config.model?.[mode] ?? null;
   const generationId = monitor.startGeneration({
@@ -1147,8 +982,6 @@ async function processBatch(items, run) {
     logger.info(`${backend.name}: ${activity}`);
     typing.poke(); // "digitando" enquanto ele pesquisa/usa ferramentas
   };
-  // Daqui em diante mensagem nova do autor não cancela mais (ver inflight.js).
-  inflight.lock(run);
   try {
     if (backend.name === 'commandcode') {
       try {
@@ -1159,8 +992,19 @@ async function processBatch(items, run) {
       }
     }
     const sessionBefore = store.get(key);
+    const prompt = buildUserMessage({
+      guildName: last.guild.name,
+      channelName: last.channel.name,
+      authorName: displayName(last),
+      items, context, mentions,
+      indexed: target,
+      referenceTimestamp: last.createdTimestamp,
+      emphasizeQuote: backend.name === 'commandcode' || backend.name === 'codex',
+      userPrompt, forceReply,
+    });
     const res = await askClaude({ key, mode, prompt, store, config, backend, onEvent, signal, now, messageCount: items.length + context.length, model: entry?.model, effort: entry ? entry.effort ?? null : undefined });
     backendSucceeded = !res.isError;
+    const noReply = backendSucceeded && isNoReply(res.text);
     if (!metricsEvents.hasTokenEvents(res.attemptNumber)) {
       for (const [index, usage] of (res.tokenUsage ?? []).entries()) {
         monitor.recordTokenUsage({
@@ -1177,7 +1021,7 @@ async function processBatch(items, run) {
       id: generationId,
       finishedAt: Date.now(),
       modelSucceeded: !res.isError,
-      outcome: res.isError ? 'failed' : isNoReply(res.text) ? 'no_reply' : 'awaiting_reply',
+      outcome: res.isError ? 'failed' : noReply ? 'no_reply' : 'awaiting_reply',
     });
     if (!fresh && !res.sessionReset && res.sessionId && res.sessionId !== sessionBefore) {
       // O CLI perdeu a sessão e abriu outra só com este lote: o próximo lote
@@ -1192,19 +1036,27 @@ async function processBatch(items, run) {
     if (res.isError) {
       logger.error({ ...stats, subtype: res.subtype }, `${backend.name} retornou erro: ${preview(res.text)}`);
       await send(last, `⚠️ ${backend.name} retornou erro (${res.subtype}): ${res.text}`);
-    } else if (isNoReply(res.text)) {
-      logger.info({ canal: where, autor: displayName(last), ...stats }, `${backend.name} decidiu não responder: ${oneLine(last.cleanContent)}`);
+      return;
+    }
+    if (noReply) {
+      logger.info({ canal: where, autor: displayName(last), ...stats }, `${backend.name} decidiu não responder`);
     } else {
       const { replyTo, text } = target ? parseDirective(res.text) : { replyTo: null, text: res.text };
       const replyMessage = replyTo ? await resolveReplyTarget(last.channel, context[replyTo - 1], replyTo) : null;
       logger.info({ ...stats, chars: text.length, respondendoA: replyMessage ? `#${replyTo}` : undefined }, 'enviando para o discord');
-      const sent = await send(replyMessage ?? last, text);
-      if (sent?.ok) {
-        monitor.markReplied({ id: generationId });
-        logger.info('resposta enviada');
-      } else {
+      if (!await send(replyMessage ?? last, text)) {
         monitor.setGenerationOutcome(generationId, 'delivery_failed');
+        return;
       }
+      monitor.markReplied({ id: generationId });
+      logger.info('resposta enviada');
+    }
+    const analyzedImages = items.flatMap((item) => item.images).filter((image) => 'description' in image);
+    const costUsd = [res, ...analyzedImages].reduce((sum, result) => sum + estimateCostUsd(result, quotaSettings.rates), 0);
+    try {
+      userQuotaStore.addUsage(userId, quota.month, costUsd);
+    } catch (err) {
+      logger.error({ err, userId, costUsd }, 'falha ao registrar consumo da cota');
     }
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -1219,7 +1071,6 @@ async function processBatch(items, run) {
     await send(last, `⚠️ ${err.message}`).catch(() => {});
   } finally {
     typing.stop();
-    trackConversationWork(last, -1);
   }
 }
 
@@ -1298,26 +1149,22 @@ function startTyping(channel) {
   return { stop: () => clearInterval(timer), poke: tick };
 }
 
-async function send(message, text, { onSent = () => {} } = {}) {
+async function send(message, text) {
   const chunks = splitMessage(text);
   if (chunks.length === 0) return false;
   const allowedMentions = { parse: ['users'], repliedUser: true }; // nunca @everyone/cargos vindos do texto gerado
   const flags = MessageFlags.SuppressEmbeds;
-  const sentMessages = [];
   try {
-    sentMessages.push(await message.reply({ content: chunks[0], allowedMentions, flags }));
+    await message.reply({ content: chunks[0], allowedMentions, flags });
   } catch (err) {
     // Mensagem original apagada durante o processamento: manda no canal mesmo assim
     logger.warn(`reply falhou (${err.message}); enviando no canal`);
-    sentMessages.push(await message.channel.send({ content: chunks[0], allowedMentions, flags }));
+    await message.channel.send({ content: chunks[0], allowedMentions, flags });
   }
-  onSent(sentMessages[0], chunks[0]);
   for (const chunk of chunks.slice(1)) {
-    const sent = await message.channel.send({ content: chunk, allowedMentions, flags });
-    sentMessages.push(sent);
-    onSent(sent, chunk);
+    await message.channel.send({ content: chunk, allowedMentions, flags });
   }
-  return { ok: true, messageIds: sentMessages.map((sent) => String(sent.id)) };
+  return true;
 }
 
 const uniqueBy = (list, keyOf) => [...new Map(list.map((x) => [keyOf(x), x])).values()];
@@ -1352,6 +1199,20 @@ function formatAggregate(value, records) {
   return records > 0 ? String(value) : '—';
 }
 
+const quotaCurrency = new Intl.NumberFormat('pt-BR', {
+  style: 'currency', currency: 'USD', maximumFractionDigits: 6,
+});
+const quotaPercent = new Intl.NumberFormat('pt-BR', {
+  style: 'percent', maximumFractionDigits: 2,
+});
+
+function formatQuota({ tier, spentUsd, limitUsd }, isAdmin = false) {
+  if (isAdmin) return `**Admin** · usado ${quotaCurrency.format(spentUsd)} no mês · cota ilimitada`;
+  const remainingUsd = Math.max(0, limitUsd - spentUsd);
+  const usedPercent = quotaPercent.format(spentUsd / limitUsd);
+  return `**${tier}** · usado ${quotaCurrency.format(spentUsd)} de ${quotaCurrency.format(limitUsd)} (${usedPercent} da cota mensal) · livre ${quotaCurrency.format(remainingUsd)}`;
+}
+
 function paginateMetrics(lines) {
   const pages = [];
   let page = '';
@@ -1373,10 +1234,8 @@ client.login(token).catch((err) => {
   logger.error(`falha no login do Discord: ${err.message}`);
   shuttingDown = true;
   clearInterval(monitorSampler);
-  conversationCron?.stop();
   monitor.finishConnectionEpisode({ endedAt: Date.now(), reason: 'shutdown' });
   monitor.closeOpenOutages({ endedAt: Date.now(), reason: 'shutdown' });
-  if (conversationArchive) void conversationArchive.flush();
   monitor.close();
   process.exitCode = 1;
   client.destroy();

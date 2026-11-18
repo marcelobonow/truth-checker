@@ -15,7 +15,7 @@ test('selectBackend devolve o módulo do backend e o settings de modelos corresp
   assert.ok(cc.settings.WEB_MAX_TURNS >= 4);
   const cx = await selectBackend('codex');
   assert.equal(cx.backend, codex);
-  assert.equal(cx.settings.MODEL.analysis, 'gpt-6-luna');
+  assert.equal(cx.settings.MODEL.vision, 'gpt-6-luna');
   assert.deepEqual(cx.settings.MODEL_CHOICES.map((entry) => entry.model), ['gpt-6-luna']);
 });
 
@@ -27,9 +27,8 @@ test('todos os settings de backend exportam a mesma forma', async () => {
   for (const name of ['claude', 'commandcode', 'codex']) {
     const { settings } = await selectBackend(name);
     assert.deepEqual(Object.keys(settings).sort(), ['EFFORT', 'MODEL', 'MODEL_CHOICES', 'WEB_MAX_TURNS']);
-    assert.ok(!('web' in settings.MODEL) && !('full' in settings.MODEL));
-    assert.ok('vision' in settings.MODEL && 'analysis' in settings.MODEL);
-    assert.ok('web' in settings.EFFORT && 'full' in settings.EFFORT);
+    assert.deepEqual(Object.keys(settings.MODEL), ['vision']);
+    assert.deepEqual(Object.keys(settings.EFFORT).sort(), ['full', 'vision', 'web']);
     assert.ok(Array.isArray(settings.MODEL_CHOICES) && settings.MODEL_CHOICES.length > 0);
     for (const entry of settings.MODEL_CHOICES) {
       assert.ok(typeof entry === 'string' || (entry && typeof entry.model === 'string'));

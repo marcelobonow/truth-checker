@@ -5,7 +5,6 @@
 export const MODEL = {
   // O padrão de respostas web/full fica no models.db (/model-default).
   vision: null, // descrição de imagens (IMAGES em settings.js); null = mesmo do web
-  analysis: "deepseek/deepseek-v4.1-flash", // modelo da análise diária
 };
 
 // Modelos que os usuários podem escolher com /model (docs/model-selector.md).
@@ -35,7 +34,6 @@ export const EFFORT = {
   web: "low",
   full: "low",
   vision: null, // null = mesmo do web
-  analysis: null, // null = mesmo do web
 };
 
 // Máximo de turnos por resposta no modo web. Não é uma cota direta de buscas:

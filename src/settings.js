@@ -87,26 +87,6 @@ export const FILES = {
   maxChars: 30_000,
 };
 
-const envFlag = (name, fallback) => process.env[name] == null
-  ? fallback
-  : ['1', 'true', 'yes', 'on'].includes(process.env[name].trim().toLowerCase());
-
-// Captura e análise podem ser desligadas independentemente. A análise usa o
-// backend ativo por padrão e aceita outro entre claude/commandcode/codex.
-export const CONVERSATION = {
-  captureEnabled: envFlag('CONVERSATION_CAPTURE', true),
-  analysisEnabled: envFlag('CONVERSATION_ANALYSIS', true),
-  analysisBackend: process.env.CONVERSATION_ANALYSIS_BACKEND?.trim() || null,
-  archiveDir: process.env.CONVERSATION_ARCHIVE_DIR?.trim() || 'conversas',
-  memoriesDir: process.env.CONVERSATION_MEMORIES_DIR?.trim() || 'memorias-conversas',
-  timeZone: process.env.CONVERSATION_TIME_ZONE?.trim() || 'America/Sao_Paulo',
-  neighborMessages: 20,
-  maxQueueBytes: 8_000_000,
-  maxCallsPerAnalysis: 5,
-  maxRetries: 3,
-  staleAnalysisAfterMs: Number(process.env.CONVERSATION_STALE_ANALYSIS_MS) || 24 * 60 * 60_000,
-};
-
 // Reinício automático da sessão do Claude (o contexto não cresce sem limite):
 // começa uma sessão nova quando o total de mensagens já enviadas a ela (lote +
 // contexto) passar de `maxMessages`, quando o contexto da última rodada passar

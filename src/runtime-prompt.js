@@ -3,11 +3,11 @@ import { formatCommandCodeUsage } from './usage.js';
 // Metadados por chamada; não confundem o teto de reinício do bot com a janela do modelo.
 export function prependRuntimeInfo(prompt, { backend, mode, model, effort, maxTurns, runtime = {} }) {
   const tools = backend === 'commandcode'
-    ? { web: 'web_search, web_fetch, search_tools', vision: 'read_file, search_tools', analysis: 'read_file, web_search, web_fetch, search_tools', full: 'todas as ferramentas disponibilizadas pelo CLI (tools=*)' }
+    ? { web: 'web_search, web_fetch, search_tools', vision: 'read_file, search_tools', full: 'todas as ferramentas disponibilizadas pelo CLI (tools=*)' }
     : backend === 'claude'
-      ? { web: 'WebSearch, WebFetch', vision: 'Read', analysis: 'Read, WebSearch, WebFetch', full: 'ferramentas padrão do Claude Code, incluindo leitura, escrita, execução e busca web; inventário exato definido pelo CLI' }
-      : { web: 'busca web; shell desativado', vision: 'imagem anexada diretamente; busca web e shell desativados', analysis: 'busca web e shell em sandbox somente leitura', full: 'ferramentas disponibilizadas pelo Codex CLI, incluindo shell e busca web' };
-  const turns = backend === 'codex' ? null : mode === 'vision' ? (backend === 'claude' ? 3 : 4) : mode === 'analysis' ? (maxTurns ?? 80) : mode === 'web' ? maxTurns : null;
+      ? { web: 'WebSearch, WebFetch', vision: 'Read', full: 'ferramentas padrão do Claude Code, incluindo leitura, escrita, execução e busca web; inventário exato definido pelo CLI' }
+      : { web: 'busca web; shell desativado', vision: 'imagem anexada diretamente; busca web e shell desativados', full: 'ferramentas disponibilizadas pelo Codex CLI, incluindo shell e busca web' };
+  const turns = backend === 'codex' ? null : mode === 'vision' ? (backend === 'claude' ? 3 : 4) : mode === 'web' ? maxTurns : null;
   const limit = (value) => value > 0 ? value : 'sem teto configurado pelo bot';
   const context = runtime.contextTokens == null ? 'desconhecido (sem medição disponível)' : `${runtime.contextTokens} tokens na última chamada medida; não inclui este pedido nem resultados futuros`;
   const planUsage = backend === 'commandcode' ? formatCommandCodeUsage(runtime.commandCodeUsage) : null;
